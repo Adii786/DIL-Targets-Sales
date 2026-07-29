@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#151515">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DIL Target vs Ach">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>DIL — Target vs Achievement Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --navy:#151515;
+    --navy-2:#2A2A2A;
+    --slate:#2A2A2A;
+    --bg:#F7F6F0;
+    --card:#FFFFFF;
+    --line:#E7E2D2;
+    --text:#1A1A1A;
+    --muted:#736F60;
+    --green:#1B8E5A;
+    --green-bg:#E7F5EE;
+    --red:#C0392B;
+    --red-bg:#FBEAE8;
+    --amber:#8A6D00;
+    --amber-bg:#FFF3C4;
+    --blue:#2A2A2A;
+    --blue-bg:#ECEAE2;
+    --brand:#8A6D00;
+    --brand-bg:#FFE202;
+    --brand-tint:#FFF3C4;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:14px;}
+  h1,h2,h3,.display{font-family:'Space Grotesk',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  #app{min-height:100vh;}
+  input, select, button, textarea{ font-size:16px; font-family:inherit; }
+
+  /* ---------- Login ---------- */
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:
+    radial-gradient(circle at 15% 10%, rgba(255,226,2,0.14), transparent 45%),
+    radial-gradient(circle at 85% 90%, rgba(255,226,2,0.08), transparent 50%),
+    linear-gradient(160deg, var(--navy) 0%, var(--navy-2) 55%, #000 100%);}
+  .login-logo{width:76px;height:76px;border-radius:16px;overflow:hidden;margin:0 0 18px;box-shadow:0 8px 20px rgba(0,0,0,0.18);}
+  .login-logo img{width:100%;height:100%;object-fit:cover;display:block;}
+  .login-card{background:var(--card);width:400px;max-width:90vw;border-radius:14px;padding:36px 32px;box-shadow:0 30px 60px rgba(10,15,30,0.35);}
+  .login-eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:6px;}
+  .login-title{font-size:21px;font-weight:700;margin:0 0 4px;color:var(--navy);}
+  .login-sub{font-size:13px;color:var(--muted);margin:0 0 26px;}
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:12px;font-weight:600;color:var(--slate);margin-bottom:6px;}
+  .field input, .field select{width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:8px;color:var(--text);background:#fff;}
+  .field input:focus, select:focus{outline:none;border-color:var(--slate);}
+  .btn{border:none;border-radius:8px;padding:11px 18px;font-weight:600;font-size:13px;cursor:pointer;transition:transform .08s ease, opacity .15s;min-height:46px;}
+  .btn:active{transform:scale(0.98);}
+  .btn-primary{background:var(--navy);color:#fff;width:100%;}
+  .btn-primary:hover{opacity:.92;}
+  .btn-ghost{background:transparent;color:var(--slate);border:1.5px solid var(--line);}
+  .btn-sm{padding:7px 12px;font-size:12px;border-radius:6px;min-height:auto;}
+  .err{background:var(--red-bg);color:var(--red);padding:9px 12px;border-radius:7px;font-size:12.5px;margin-bottom:14px;font-weight:500;}
+  .login-hint{margin-top:22px;font-size:11.5px;color:var(--muted);line-height:1.6;border-top:1px dashed var(--line);padding-top:14px;}
+
+  /* ---------- Shell ---------- */
+  .topbar{background:var(--navy);color:#fff;padding:14px 26px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand-mark{width:36px;height:36px;border-radius:8px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:var(--brand-bg);}
+  .brand-mark img{width:100%;height:100%;object-fit:cover;display:block;}
+  .brand-text .t1{font-size:13px;font-weight:700;letter-spacing:.02em;}
+  .brand-text .t2{font-size:11px;color:#AEB9D4;}
+  .top-right{display:flex;align-items:center;gap:14px;}
+  .today-pill{background:rgba(255,255,255,0.1);padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;}
+  .logout{color:#DCE3F5;font-size:12.5px;cursor:pointer;text-decoration:underline;background:none;border:none;}
+
+  .container{max-width:1180px;margin:0 auto;padding:24px 20px 96px;}
+  .tabs{display:flex;gap:6px;margin-bottom:20px;background:var(--card);padding:5px;border-radius:10px;width:fit-content;border:1px solid var(--line);flex-wrap:wrap;}
+  .tab{padding:8px 16px;border-radius:7px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border:none;background:none;}
+  .tab.active{background:var(--navy);color:#fff;}
+
+  .cards-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:22px;}
+  .stat-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
+  .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin-bottom:8px;}
+  .stat-value{font-size:23px;font-weight:700;font-family:'Space Grotesk';}
+  .stat-sub{font-size:11.5px;color:var(--muted);margin-top:4px;}
+  .pos{color:var(--green);} .neg{color:var(--red);}
+
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:20px;}
+  .panel h3{margin:0 0 16px;font-size:15px;font-weight:700;color:var(--navy);display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .panel h3 .cnt{background:var(--brand-tint);color:var(--brand);font-size:11px;padding:2px 8px;border-radius:20px;font-weight:700;}
+
+  .row-flex{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;}
+  .row-flex .field{margin-bottom:0;flex:1;min-width:150px;}
+
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;padding:8px 10px;border-bottom:2px solid var(--line);}
+  td{padding:10px;border-bottom:1px solid var(--line);font-size:13.5px;}
+  tr.clickable{cursor:pointer;}
+  tr.clickable:hover td{background:#FAFBFD;}
+  .num{text-align:right;font-family:'IBM Plex Mono',monospace;}
+
+  .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;}
+  .badge-gray{background:#EEF0F4;color:#7C8798;}
+  .badge-amber{background:var(--amber-bg);color:var(--amber);}
+  .badge-blue{background:var(--blue-bg);color:var(--blue);}
+  .badge-green{background:var(--green-bg);color:var(--green);}
+  .badge-red{background:var(--red-bg);color:var(--red);}
+
+  .meter{background:#EEF0F4;height:7px;border-radius:20px;overflow:hidden;width:100%;min-width:70px;}
+  .meter-fill{height:100%;border-radius:20px;}
+
+  .town-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;}
+  .town-card{
+    background:var(--card);border:1.5px solid var(--line);border-radius:12px;
+    padding:14px 14px;text-align:left;cursor:pointer;font-family:inherit;
+    display:flex;flex-direction:column;gap:8px;min-height:96px;position:relative;
+  }
+  .town-card:active{transform:scale(0.98);}
+  .town-card .tc-name{font-weight:700;font-size:14.5px;color:var(--text);padding-right:60px;}
+  .town-card .tc-nums{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);}
+  .town-card .tc-nums b{color:var(--text);font-family:'IBM Plex Mono';}
+  .town-card .tc-badge{position:absolute;top:12px;right:12px;}
+
+  .entry-screen-header{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+  .back-btn{
+    background:var(--brand-tint);color:var(--navy);border:none;width:38px;height:38px;
+    border-radius:10px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  .entry-screen-header h2{margin:0;font-size:17px;color:var(--navy);}
+
+  .family-row{cursor:pointer;}
+  .family-row:hover td{background:#FAFBFD;}
+  .sku-subrow td{background:#FBFCFE;font-size:12.5px;padding-left:22px;color:var(--muted);}
+  .expand-caret{display:inline-block;width:14px;color:var(--muted);}
+
+  .bottom-nav{
+    display:none;position:fixed;left:0;right:0;bottom:0;z-index:40;
+    background:#fff;border-top:1px solid var(--line);
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom));
+    box-shadow:0 -6px 20px rgba(10,15,30,0.06);
+  }
+  .bottom-nav-row{display:flex;gap:4px;}
+  .bottom-nav-item{
+    flex:1;border:none;background:none;font-family:'Inter',sans-serif;
+    display:flex;flex-direction:column;align-items:center;gap:3px;
+    padding:8px 4px;border-radius:10px;color:var(--muted);font-size:11px;font-weight:600;
+  }
+  .bottom-nav-item .ic{font-size:18px;line-height:1;}
+  .bottom-nav-item.active{color:var(--navy);background:var(--brand-tint);}
+
+  .loading{padding:30px;text-align:center;color:var(--muted);font-size:13px;}
+  .empty-note{color:var(--muted);font-size:13px;padding:14px 0;text-align:center;}
+  .footer-note{font-size:11px;color:var(--muted);text-align:center;margin-top:30px;line-height:1.7;}
+
+  .upload-box{border:2px dashed var(--line);border-radius:10px;padding:24px;text-align:center;cursor:pointer;background:#FBFBF8;}
+  .upload-box:hover{border-color:var(--brand);}
+  .upload-box input[type=file]{display:none;}
+
+  table.responsive-table thead{display:table-header-group;}
+  @media(max-width:720px){
+    .topbar{padding:12px 16px;}
+    .container{padding:14px 12px 96px;}
+    .tabs.desktop-tabs{display:none;}
+    .bottom-nav{display:block;}
+    .cards-row{grid-template-columns:repeat(2,1fr);}
+    .stat-value{font-size:19px;}
+    table.responsive-table thead{display:none;}
+    table.responsive-table, table.responsive-table tbody, table.responsive-table tr, table.responsive-table td{display:block;width:100%;}
+    table.responsive-table tr{border:1px solid var(--line);border-radius:10px;margin-bottom:10px;padding:6px 4px;background:#fff;}
+    table.responsive-table td{border-bottom:none;display:flex;justify-content:space-between;align-items:center;padding:7px 10px;}
+    table.responsive-table td::before{content:attr(data-label);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;}
+    table.responsive-table td.num{text-align:right;}
+    table.responsive-table tr.sku-subrow{background:#FBFCFE;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ============================= SUPABASE CONFIG ============================= */
+// Paste your project's values here (Supabase dashboard > Project Settings > API).
+const SUPABASE_URL = 'https://nqxljjrkafcjfxjpfcao.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xeGxqanJrYWZjamZ4anBmY2FvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3OTUzMTUsImV4cCI6MjEwMDM3MTMxNX0.IeF-JviusILsTdBMOGMwWpyrdTSLPdDHxn_TUdpbxoo';
+const SUPABASE_CONFIGURED = !SUPABASE_URL.includes('YOUR_') && !SUPABASE_ANON_KEY.includes('YOUR_');
+const sb = SUPABASE_CONFIGURED ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* ============================= TOWN / RSM DATA ============================= */
+const TOWN_DATA = {
+  yaqoob: { name:'Yaqoob Magnejo', towns:['Hyderabad', 'Mirpurkhas', 'Nawabshah', 'Sukkur', 'Larkana', 'Quetta', 'Rahimyar Khan', 'Khanpur', 'Sadiqabad', 'Turbat'] },
+  jamal: { name:'Jamal e Rabbi', towns:['Multan', 'Dera Ghazi Khan', 'Muzaffargarh', 'Bhawalnagar', 'Chishtian', 'Bahawalpur', 'Ahmed pur East', 'Mian chunnu', 'Vihari', 'Karachi'] },
+  danish: { name:'Danish Imran', towns:['Lahore', 'Pattoki', 'Kot Abdul Malik', 'Kasur', 'Gujranwala', 'Kamoki', 'Sheikhupura'] },
+  qaiser: { name:'Qaiser Raza Baig', towns:['Faisalabad', 'Sahiwal', 'Okara', 'Pak Patan Shrif', 'Burewala'] },
+  sajid: { name:'Sajid Subhani', towns:['Rawal pindi', 'Wah cantt.', 'Dina', 'Chakwal', 'Lalamusa', 'Bhimber', 'Gujrat', 'Sargodha', 'Mandi Bahauddin', 'Phalia', 'Jhang Saddar', 'Pirmahal', 'Mianwali', 'Dera Ismail Khan', 'Bannu', 'Layyah', 'Hafizabad', 'Wazirabad', 'Sialkot', 'Narowal'] },
+  arif: { name:'Arif Saeed', towns:['Peshawar', 'Kohat', 'Sadda', 'Attock City', 'Mardan', 'Takht Bhai', 'Muzaffarabad', 'Mingora', 'Dir', 'Skardu', 'Gilgit', 'Abbottabad'] }
+};
+const RSM_IDS = Object.keys(TOWN_DATA);
+const ALL_TOWNS = RSM_IDS.flatMap(id => TOWN_DATA[id].towns);
+function rsmOfTown(town){ return RSM_IDS.find(id => TOWN_DATA[id].towns.includes(town)); }
+
+const USERS = {
+  yaqoob:{password:'yaqoob2026', role:'rsm', rsmId:'yaqoob'},
+  jamal:{password:'jamal2026', role:'rsm', rsmId:'jamal'},
+  danish:{password:'danish2026', role:'rsm', rsmId:'danish'},
+  qaiser:{password:'qaiser2026', role:'rsm', rsmId:'qaiser'},
+  sajid:{password:'sajid2026', role:'rsm', rsmId:'sajid'},
+  arif:{password:'arif2026', role:'rsm', rsmId:'arif'},
+  nsm:{password:'nsm2026', role:'nsm'},
+  adnan:{password:'adnan2026', role:'admin'}
+};
+
+const MONTH_OPTIONS = ['2026-07','2026-08','2026-09']; // extend as new months are uploaded
+
+/* ============================= STATE ============================= */
+let state = {
+  user:null,
+  loginError:'',
+  month:'2026-07',
+  rsmView:'achievement',      // achievement | hierarchy | stock
+  selectedTown:null,
+  expandedFamily:null,
+  familyData:null,            // cached: {family: {target,achieved,variance}}
+  skuData:null,               // cached: {family: [{sku_code,sku_name,qty}]}
+  nsmView:'achievement',      // achievement | hierarchy | stock | upload
+  expandedRsm:null,
+  nsmFamilySummary:null,      // per-rsm rollup for current month
+  adminUploadTab:'target',    // target | achievement
+  adminTargetMonth:'2026-08',
+  adminTargetTown: ALL_TOWNS[0],
+  adminAchMonth:'2026-08',
+  adminAchType:'primary',
+  adminUploadResult:null,
+  hierarchyData:null
+};
+
+/* ============================= SESSION PERSISTENCE ============================= */
+const SESSION_KEY = 'dil_tva_session_v1';
+function saveSession(){
+  try{
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      user: state.user, month: state.month, rsmView: state.rsmView,
+      selectedTown: state.selectedTown, nsmView: state.nsmView
+    }));
+  }catch(e){}
+}
+function restoreSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    if(!raw) return;
+    const s = JSON.parse(raw);
+    if(s.user) state.user = s.user;
+    if(s.month) state.month = s.month;
+    if(s.rsmView) state.rsmView = s.rsmView;
+    if(s.selectedTown) state.selectedTown = s.selectedTown;
+    if(s.nsmView) state.nsmView = s.nsmView;
+  }catch(e){}
+}
+
+/* ============================= HELPERS ============================= */
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escJs(s){ return esc(s).replace(/'/g,"\\'"); }
+function fmtQty(n){ n = Number(n)||0; return Math.round(n).toLocaleString('en-US'); }
+function fmtPct(n){ if(!isFinite(n)) return '—'; return n.toFixed(0)+'%'; }
+function achPct(target, achieved){ if(target<=0) return achieved>0?100:0; return (achieved/target)*100; }
+function meterColor(pct){
+  if(pct>=100) return 'var(--green)';
+  if(pct>=60) return 'var(--blue)';
+  if(pct>0) return 'var(--amber)';
+  return '#D7DBE4';
+}
+function monthLabel(m){
+  const [y,mo] = m.split('-');
+  const d = new Date(Number(y), Number(mo)-1, 1);
+  return d.toLocaleDateString('en-GB',{month:'long', year:'numeric'});
+}
+
+/* ============================= DATA LAYER ============================= */
+async function fetchFamilyAchievement(month, town, type){
+  if(!sb) return [];
+  type = type || 'primary';
+  const {data, error} = await sb.from('monthly_achievement_family').select('*')
+    .eq('month', month).eq('town', town).eq('type', type).order('family');
+  if(error){ console.error(error); return []; }
+  return data||[];
+}
+async function fetchSkuAchievement(month, town, type){
+  if(!sb) return [];
+  type = type || 'primary';
+  const {data, error} = await sb.from('monthly_achievement_sku').select('*')
+    .eq('month', month).eq('town', town).eq('type', type);
+  if(error){ console.error(error); return []; }
+  return data||[];
+}
+async function fetchSkuNames(codes){
+  if(!sb || !codes.length) return {};
+  const {data, error} = await sb.from('product_hierarchy').select('sku_code,sku_name').in('sku_code', codes);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.sku_code]=r.sku_name);
+  return map;
+}
+async function fetchTownData(month, town, type){
+  const [famRows, skuRows] = await Promise.all([
+    fetchFamilyAchievement(month, town, type),
+    fetchSkuAchievement(month, town, type)
+  ]);
+  const skuCodes = [...new Set(skuRows.map(r=>r.sku_code))];
+  const nameMap = await fetchSkuNames(skuCodes);
+  const byFamily = {};
+  famRows.forEach(f=>{ byFamily[f.family] = { target:Number(f.target_qty)||0, achieved:Number(f.achieved_qty)||0, variance:Number(f.variance_qty!==undefined?f.variance_qty:f.variance)||0, skus:[] }; });
+  skuRows.forEach(r=>{
+    if(!byFamily[r.family]) byFamily[r.family] = {target:0, achieved:0, variance:0, skus:[]};
+    byFamily[r.family].skus.push({ sku_code:r.sku_code, sku_name: nameMap[r.sku_code] || r.sku_code, qty: Number(r.qty)||0 });
+  });
+  return byFamily;
+}
+async function fetchTargetFamily(month, town){
+  if(!sb) return {};
+  const {data, error} = await sb.from('monthly_target_family').select('*').eq('month',month).eq('town',town);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.family]=Number(r.target_qty)||0);
+  return map;
+}
+async function fetchOpeningStockFamily(month, town){
+  if(!sb) return {};
+  const {data, error} = await sb.from('opening_stock_family').select('*').eq('month',month).eq('town',town);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.family]=Number(r.qty)||0);
+  return map;
+}
+function prevMonth(m){
+  const [y,mo] = m.split('-').map(Number);
+  const d = new Date(y, mo-2, 1); // mo-1 is current month index, -1 more for previous
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+const SHORTFALL_CAP_RATIO = 1.0; // carried-forward shortfall capped at 100% of the new month's own target — ask Adnan before raising this
+
+/* Suggested order = (this month's target + capped carry-forward shortfall from last month) − opening stock, floored at 0.
+   Then split 50% / 25% / 25% across 3 supplies. */
+async function computeSuggestedOrder(month, town){
+  const prior = prevMonth(month);
+  const [curTargets, priorAch, stock] = await Promise.all([
+    fetchTargetFamily(month, town),
+    fetchFamilyAchievement(prior, town, 'primary'),
+    fetchOpeningStockFamily(month, town)
+  ]);
+  const priorMap = {};
+  priorAch.forEach(r=> priorMap[r.family] = { target:Number(r.target_qty)||0, achieved:Number(r.achieved_qty)||0 });
+
+  const families = new Set([...Object.keys(curTargets), ...Object.keys(priorMap)]);
+  const rows = [];
+  families.forEach(fam=>{
+    const augTarget = curTargets[fam] || 0;
+    const p = priorMap[fam];
+    const rawShortfall = p ? Math.max(p.target - p.achieved, 0) : 0;
+    const cappedShortfall = Math.min(rawShortfall, augTarget * SHORTFALL_CAP_RATIO);
+    const openingStock = stock[fam] || 0;
+    const suggested = Math.max(augTarget + cappedShortfall - openingStock, 0);
+    const s1 = Math.round(suggested*0.5);
+    const s2 = Math.round(suggested*0.25);
+    const s3 = Math.max(suggested - s1 - s2, 0);
+    rows.push({family:fam, augTarget, rawShortfall, cappedShortfall, openingStock, suggested, s1, s2, s3, hasStockData: fam in stock});
+  });
+  rows.sort((a,b)=> b.suggested - a.suggested);
+  const stockUploaded = Object.keys(stock).length > 0;
+  return {rows, stockUploaded, priorMonth:prior};
+}
+
+async function uploadStockBulk(month, town, text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2){ unmatched.push(line); return; }
+    const family = parts[0];
+    const qty = Number(String(parts[1]).replace(/,/g,''));
+    if(!family || isNaN(qty)){ unmatched.push(line); return; }
+    rows.push({month, town, family, qty});
+  });
+  if(rows.length){
+    const {error} = await sb.from('opening_stock_family').upsert(rows, {onConflict:'month,town,family'});
+    if(error) return {ok:false, error:error.message};
+  }
+  return {ok:true, count:rows.length, unmatched};
+}
+async function fetchHierarchy(){
+  if(!sb) return [];
+  if(state.hierarchyData) return state.hierarchyData;
+  const {data, error} = await sb.from('product_hierarchy').select('*').order('dcm_family').order('sku_code');
+  if(error){ console.error(error); return []; }
+  state.hierarchyData = data||[];
+  return state.hierarchyData;
+}
+
+/* ---- uploads ---- */
+async function uploadTargetBulk(month, town, text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2){ unmatched.push(line); return; }
+    const family = parts[0];
+    const qty = Number(String(parts[1]).replace(/,/g,''));
+    if(!family || isNaN(qty)){ unmatched.push(line); return; }
+    rows.push({month, town, family, target_qty:qty});
+  });
+  if(rows.length){
+    const {error} = await sb.from('monthly_target_family').upsert(rows, {onConflict:'month,town,family'});
+    if(error) return {ok:false, error:error.message};
+  }
+  return {ok:true, count:rows.length, unmatched};
+}
+
+/* Parses an "Achievement vs Target" workbook exactly like the source file:
+   each sheet = one town, SKU rows followed by a family subtotal row. */
+async function uploadAchievementWorkbook(file, month, type){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, {type:'array', cellDates:true});
+  const skip = new Set(['Smmary (2)','Target','Order_Qty','Order_Value','LP','FSD_TRY','LHR_TRY','Upper_Punjab_Region','North_Region']);
+  const familyRows = [], skuRows = [];
+  let sheetsProcessed = 0, townsUnmatched = [];
+
+  wb.SheetNames.forEach(sheetName=>{
+    if(skip.has(sheetName)) return;
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    if(rows.length < 6) return;
+    let townName = (rows[2] && rows[2][3]) || (rows[1] && rows[1][10]);
+    if(!townName) return;
+    townName = String(townName).trim().replace(/,$/,'');
+    if(!ALL_TOWNS.includes(townName)){ townsUnmatched.push(sheetName+' -> '+townName); return; }
+
+    let buffer = [];
+    for(let i=5; i<rows.length; i++){
+      const row = rows[i] || [];
+      const skuCode = row[2], product = row[3], target = row[4], netOrders = row[5];
+      if(product==null) continue;
+      const pname = String(product).trim();
+      if(skuCode){
+        buffer.push({sku_code:String(skuCode).trim(), qty:Number(netOrders)||0});
+      } else {
+        if(pname.toLowerCase().startsWith('total value')) continue;
+        buffer.forEach(b=>{ skuRows.push({month, town:townName, sku_code:b.sku_code, family:pname, qty:b.qty, type}); });
+        familyRows.push({month, town:townName, family:pname, target_qty:Number(target)||0, achieved_qty:Number(netOrders)||0, variance:(Number(netOrders)||0)-(Number(target)||0), type});
+        buffer = [];
+      }
+    }
+    buffer.forEach(b=>{
+      skuRows.push({month, town:townName, sku_code:b.sku_code, family:'(Ungrouped)', qty:b.qty, type});
+    });
+    sheetsProcessed++;
+  });
+
+  // upsert in batches (Supabase handles large arrays fine, but chunk defensively)
+  async function upsertChunked(table, rows, conflict){
+    const chunkSize = 1000;
+    for(let i=0; i<rows.length; i+=chunkSize){
+      const chunk = rows.slice(i, i+chunkSize);
+      const {error} = await sb.from(table).upsert(chunk, {onConflict:conflict});
+      if(error) return error.message;
+    }
+    return null;
+  }
+  const famErr = await upsertChunked('monthly_achievement_family', familyRows, 'month,town,family,type');
+  if(famErr) return {ok:false, error:famErr};
+  const skuErr = await upsertChunked('monthly_achievement_sku', skuRows, 'month,town,sku_code,type');
+  if(skuErr) return {ok:false, error:skuErr};
+
+  return {ok:true, sheetsProcessed, familyRows:familyRows.length, skuRows:skuRows.length, townsUnmatched};
+}
+
+/* ============================= RENDER ROOT ============================= */
+function render(){
+  saveSession();
+  const app = document.getElementById('app');
+  if(!SUPABASE_CONFIGURED){ app.innerHTML = renderSetupBanner(); return; }
+  if(!state.user){ app.innerHTML = renderLogin(); return; }
+  if(state.user.role==='rsm'){ app.innerHTML = renderRsmShell(); loadRsmView(); }
+  else { app.innerHTML = renderNsmShell(); loadNsmView(); }
+}
+function renderSetupBanner(){
+  return `<div class="login-wrap"><div class="login-card">
+    <h2 style="color:var(--navy);margin:0 0 10px;">Connect Supabase to finish setup</h2>
+    <p style="color:var(--muted);font-size:13.5px;">Run <code>tva_schema.sql</code> in Supabase's SQL Editor, import the seed CSVs, then paste your Project URL and anon key into <code>SUPABASE_URL</code> / <code>SUPABASE_ANON_KEY</code> near the top of this file's script tag.</p>
+  </div></div>`;
+}
+
+function renderLogin(){
+  return `
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-logo"><img src="dil_logo.png" alt="Dollar Industries Limited"></div>
+      <div class="login-eyebrow">Dollar Industries Limited</div>
+      <h1 class="login-title">Target vs Achievement Portal</h1>
+      <p class="login-sub">SKU-wise primary &amp; secondary, town-wise, with next-month order suggestions.</p>
+      ${state.loginError ? `<div class="err">${esc(state.loginError)}</div>` : ''}
+      <div class="field"><label>Username</label><input id="loginUser" placeholder="e.g. yaqoob" autocomplete="username"></div>
+      <div class="field"><label>Password</label><input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+      <button class="btn btn-primary" onclick="doLogin()">Sign in</button>
+      <div class="login-hint">8 logins: 6 RSM accounts (town-restricted), 1 NSM account (view-only, all regions), 1 admin account (Adnan — uploads targets, achievement workbooks, and stock).</div>
+    </div>
+  </div>`;
+}
+function doLogin(){
+  const u = document.getElementById('loginUser').value.trim().toLowerCase();
+  const p = document.getElementById('loginPass').value;
+  const rec = USERS[u];
+  if(!rec || rec.password!==p){ state.loginError='Incorrect username or password.'; render(); return; }
+  state.loginError='';
+  const displayName = rec.rsmId ? TOWN_DATA[rec.rsmId].name : (rec.role==='admin' ? 'Sales Ops — Admin' : 'NSM — Head Office');
+  state.user = {username:u, role:rec.role, rsmId:rec.rsmId||null, name:displayName};
+  state.rsmView='achievement'; state.selectedTown=null; state.expandedFamily=null; state.familyData=null; state.skuData=null;
+  state.nsmView='achievement'; state.expandedRsm=null; state.nsmFamilySummary=null;
+  render();
+}
+function doLogout(){
+  state.user=null;
+  try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+  render();
+}
+
+/* ============================= RSM SHELL ============================= */
+function renderRsmShell(){
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  const tabs = [
+    {k:'achievement', l:'Achievement', ic:'●'},
+    {k:'suggested', l:'Suggested Order', ic:'▶'},
+    {k:'hierarchy', l:'Hierarchy', ic:'▤'},
+    {k:'stock', l:'Stock', ic:'▦'}
+  ];
+  return `
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><img src="dil_logo.png" alt="DOLLAR"></div>
+      <div class="brand-text"><div class="t1">${esc(state.user.name)}</div><div class="t2">Regional Sales Manager · ${towns.length} towns</div></div>
+    </div>
+    <div class="top-right">
+      <div class="today-pill">${monthLabel(state.month)}</div>
+      <button class="logout" onclick="doLogout()">Log out</button>
+    </div>
+  </div>
+  <div class="container">
+    <div class="row-flex" style="margin-bottom:16px;">
+      <div class="field" style="max-width:220px;">
+        <label>Month</label>
+        <select onchange="changeMonth(this.value)">
+          ${MONTH_OPTIONS.map(m=>`<option value="${m}" ${state.month===m?'selected':''}>${monthLabel(m)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="tabs desktop-tabs">
+      ${tabs.map(t=>`<button class="tab ${state.rsmView===t.k?'active':''}" onclick="setRsmView('${t.k}')">${t.l}</button>`).join('')}
+    </div>
+    <div id="rsmBody"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="bottom-nav"><div class="bottom-nav-row">
+    ${tabs.map(t=>`<button class="bottom-nav-item ${state.rsmView===t.k?'active':''}" onclick="setRsmView('${t.k}')"><span class="ic">${t.ic}</span>${t.l}</button>`).join('')}
+  </div></div>`;
+}
+function setRsmView(v){ state.rsmView=v; state.selectedTown=null; state.expandedFamily=null; render(); }
+function changeMonth(m){ state.month=m; state.selectedTown=null; state.familyData=null; state.expandedRsm=null; state.nsmFamilySummary=null; render(); }
+
+async function loadRsmView(){
+  const body = document.getElementById('rsmBody');
+  const towns = TOWN_DATA[state.user.rsmId].towns;
+  if(state.rsmView==='achievement'){
+    if(state.selectedTown){
+      if(!state.familyData) state.familyData = await fetchTownData(state.month, state.selectedTown, 'primary');
+      body.innerHTML = renderTownAchievementDetail(state.selectedTown, state.familyData);
+    } else {
+      if(!state.nsmFamilySummary) state.nsmFamilySummary = await buildTownSummaries(towns, state.month);
+      body.innerHTML = renderTownGrid(towns, state.nsmFamilySummary, 'achievement');
+    }
+  } else if(state.rsmView==='suggested'){
+    if(state.selectedTown){
+      if(!state.suggestedData) state.suggestedData = await computeSuggestedOrder(state.month, state.selectedTown);
+      body.innerHTML = renderSuggestedOrderDetail(state.selectedTown, state.suggestedData);
+    } else {
+      body.innerHTML = renderTownGrid(towns, null, 'suggested');
+    }
+  } else if(state.rsmView==='hierarchy'){
+    if(!state.hierarchyData) await fetchHierarchy();
+    body.innerHTML = renderHierarchyBrowser();
+  } else {
+    body.innerHTML = renderStockPlaceholder();
+  }
+}
+
+async function buildTownSummaries(towns, month){
+  const out = {};
+  await Promise.all(towns.map(async t=>{
+    const rows = await fetchFamilyAchievement(month, t, 'primary');
+    let target=0, achieved=0;
+    rows.forEach(r=>{ target+=Number(r.target_qty)||0; achieved+=Number(r.achieved_qty)||0; });
+    out[t] = {target, achieved, familyCount: rows.length};
+  }));
+  return out;
+}
+
+function renderTownGrid(towns, summaries, mode){
+  const sorted = summaries ? [...towns].sort((a,b)=> achPct(summaries[a].target,summaries[a].achieved) - achPct(summaries[b].target,summaries[b].achieved)) : towns;
+  return `
+  <div class="panel">
+    <h3>${mode==='suggested' ? 'Suggested Orders — by Town' : 'Achievement vs Target — by Town'} <span class="cnt">tap a town for detail${summaries?' · lowest achievement first':''}</span></h3>
+    <div class="town-grid">
+      ${sorted.map(t=>{
+        if(mode==='suggested'){
+          return `<button class="town-card" onclick="selectTown('${escJs(t)}')">
+            <span class="tc-name">${esc(t)}</span>
+            <span class="tc-nums"><span>Tap for supply plan</span></span>
+          </button>`;
+        }
+        const s = summaries[t];
+        const pct = achPct(s.target, s.achieved);
+        const badge = pct>=100 ? {l:'Achieved',c:'green'} : pct>=60 ? {l:'On track',c:'blue'} : pct>0 ? {l:'Behind',c:'amber'} : {l:'No data',c:'gray'};
+        return `<button class="town-card" onclick="selectTown('${escJs(t)}')">
+          <span class="tc-badge"><span class="badge badge-${badge.c}">${badge.l}</span></span>
+          <span class="tc-name">${esc(t)}</span>
+          <span class="tc-nums"><span>Target</span><b>${fmtQty(s.target)}</b></span>
+          <span class="tc-nums"><span>Achieved</span><b>${fmtQty(s.achieved)}</b></span>
+          <span class="tc-nums"><span>Achv.</span><b>${fmtPct(pct)}</b></span>
+        </button>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+function selectTown(t){ state.selectedTown=t; state.familyData=null; state.suggestedData=null; state.expandedFamily=null; render(); }
+function backToTownGrid(){ state.selectedTown=null; state.expandedFamily=null; render(); }
+function toggleFamily(fam){ state.expandedFamily = state.expandedFamily===fam ? null : fam; render(); }
+
+function renderTownAchievementDetail(town, familyData){
+  const families = Object.keys(familyData).sort((a,b)=>{
+    const va = familyData[a].target - familyData[a].achieved;
+    const vb = familyData[b].target - familyData[b].achieved;
+    return vb - va; // biggest shortfall first
+  });
+  let totTarget=0, totAch=0;
+  families.forEach(f=>{ totTarget+=familyData[f].target; totAch+=familyData[f].achieved; });
+  const pct = achPct(totTarget, totAch);
+  return `
+  <div class="entry-screen-header">
+    <button class="back-btn" onclick="backToTownGrid()">←</button>
+    <h2>${esc(town)} — ${monthLabel(state.month)}</h2>
+    <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadTownCsv('${escJs(town)}')">⬇ Download CSV</button>
+  </div>
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Total Target</div><div class="stat-value">${fmtQty(totTarget)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Achieved</div><div class="stat-value">${fmtQty(totAch)}</div></div>
+    <div class="stat-card"><div class="stat-label">Remaining Balance</div><div class="stat-value ${totTarget-totAch>0?'neg':'pos'}">${fmtQty(Math.max(totTarget-totAch,0))}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${fmtPct(pct)}</div></div>
+  </div>
+  <div class="panel">
+    <h3>Family-wise (Primary) <span class="cnt">${families.length} families · tap to see SKUs</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>Family</th><th class="num">Target</th><th class="num">Achieved</th><th class="num">Variance</th><th class="num">Balance</th><th>Achv.</th></tr></thead>
+      <tbody>
+      ${families.map(f=>{
+        const d = familyData[f];
+        const fpct = achPct(d.target, d.achieved);
+        const balance = Math.max(d.target - d.achieved, 0);
+        const expanded = state.expandedFamily===f;
+        const skuRows = expanded ? d.skus.slice().sort((a,b)=>b.qty-a.qty).map(s=>`
+          <tr class="sku-subrow">
+            <td data-label="SKU">${esc(s.sku_name)} <span class="mono" style="color:var(--muted);font-size:11px;">(${esc(s.sku_code)})</span></td>
+            <td class="num" data-label="Target">—</td>
+            <td class="num" data-label="Achieved">${fmtQty(s.qty)}</td>
+            <td class="num" data-label="Variance">—</td>
+            <td class="num" data-label="Balance">—</td>
+            <td data-label="Achv.">—</td>
+          </tr>`).join('') : '';
+        return `<tr class="family-row" onclick="toggleFamily('${escJs(f)}')">
+          <td data-label="Family"><span class="expand-caret">${expanded?'▾':'▸'}</span>${esc(f)}</td>
+          <td class="num" data-label="Target">${fmtQty(d.target)}</td>
+          <td class="num" data-label="Achieved">${fmtQty(d.achieved)}</td>
+          <td class="num ${d.variance>=0?'pos':'neg'}" data-label="Variance">${fmtQty(d.variance)}</td>
+          <td class="num ${balance>0?'neg':''}" data-label="Balance">${fmtQty(balance)}</td>
+          <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(fpct,100)}%;background:${meterColor(fpct)}"></div></div></td>
+        </tr>${skuRows}`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>
+  <p class="footer-note">"Balance" is the remaining gap to hit this month's target (0 if already met) — carry this into next month's follow-up. SKU rows show actual achievement only; targets are set at family level, not SKU level.</p>`;
+}
+
+function downloadTownCsv(town){
+  const d = state.familyData;
+  if(!d) return;
+  let csv = 'Family,SKU Code,SKU Name,Target (Family),Achieved (Family),Variance (Family),SKU Qty\n';
+  Object.keys(d).forEach(f=>{
+    const fam = d[f];
+    if(fam.skus.length===0){
+      csv += `"${f}",,,"${fam.target}","${fam.achieved}","${fam.variance}",\n`;
+    } else {
+      fam.skus.forEach(s=>{
+        csv += `"${f}","${s.sku_code}","${s.sku_name}","${fam.target}","${fam.achieved}","${fam.variance}","${s.qty}"\n`;
+      });
+    }
+  });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${state.month}_achievement.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ---- Suggested Order ---- */
+function renderSuggestedOrderDetail(town, data){
+  const {rows, stockUploaded, priorMonth} = data;
+  const totSuggested = rows.reduce((s,r)=>s+r.suggested,0);
+  const tot1 = rows.reduce((s,r)=>s+r.s1,0), tot2 = rows.reduce((s,r)=>s+r.s2,0), tot3 = rows.reduce((s,r)=>s+r.s3,0);
+  return `
+  <div class="entry-screen-header">
+    <button class="back-btn" onclick="backToTownGrid()">←</button>
+    <h2>${esc(town)} — Suggested Order for ${monthLabel(state.month)}</h2>
+    <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadSuggestedCsv('${escJs(town)}')">⬇ Download CSV</button>
+  </div>
+  ${!stockUploaded ? `<div class="err" style="background:var(--amber-bg);color:var(--amber);">Opening stock for ${monthLabel(state.month)} hasn't been uploaded yet — this suggestion is based on target + ${monthLabel(priorMonth)} shortfall only, before stock is netted off.</div>` : ''}
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Total Suggested Order</div><div class="stat-value">${fmtQty(totSuggested)}</div></div>
+    <div class="stat-card"><div class="stat-label">1st Supply (50%)</div><div class="stat-value">${fmtQty(tot1)}</div></div>
+    <div class="stat-card"><div class="stat-label">2nd Supply (25%)</div><div class="stat-value">${fmtQty(tot2)}</div></div>
+    <div class="stat-card"><div class="stat-label">3rd Supply (25%)</div><div class="stat-value">${fmtQty(tot3)}</div></div>
+  </div>
+  <div class="panel">
+    <h3>Family-wise Suggested Order <span class="cnt">${rows.length} families · sorted by size</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>Family</th><th class="num">${monthLabel(state.month)} Target</th><th class="num">${monthLabel(priorMonth)} Shortfall</th><th class="num">Opening Stock</th><th class="num">Suggested Order</th><th class="num">1st (50%)</th><th class="num">2nd (25%)</th><th class="num">3rd (25%)</th></tr></thead>
+      <tbody>
+      ${rows.map(r=>`<tr>
+        <td data-label="Family">${esc(r.family)}</td>
+        <td class="num" data-label="${monthLabel(state.month)} Target">${fmtQty(r.augTarget)}</td>
+        <td class="num" data-label="${monthLabel(priorMonth)} Shortfall">${fmtQty(r.cappedShortfall)}${r.rawShortfall>r.cappedShortfall?` <span style="color:var(--muted);font-size:11px;">(capped from ${fmtQty(r.rawShortfall)})</span>`:''}</td>
+        <td class="num" data-label="Opening Stock">${r.hasStockData ? fmtQty(r.openingStock) : '—'}</td>
+        <td class="num" data-label="Suggested Order"><b>${fmtQty(r.suggested)}</b></td>
+        <td class="num" data-label="1st (50%)">${fmtQty(r.s1)}</td>
+        <td class="num" data-label="2nd (25%)">${fmtQty(r.s2)}</td>
+        <td class="num" data-label="3rd (25%)">${fmtQty(r.s3)}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  <p class="footer-note">Formula: Suggested Order = ${monthLabel(state.month)} Target + (${monthLabel(priorMonth)} Target − Achieved, floored at 0, capped at 100% of ${monthLabel(state.month)}'s own target) − Opening Stock — floored at 0. Split 50% / 25% / 25% across 3 supplies.</p>`;
+}
+function downloadSuggestedCsv(town){
+  const {rows} = state.suggestedData;
+  let csv = 'Family,Target,Prior Shortfall (capped),Opening Stock,Suggested Order,1st Supply (50%),2nd Supply (25%),3rd Supply (25%)\n';
+  rows.forEach(r=>{
+    csv += `"${r.family}","${r.augTarget}","${r.cappedShortfall}","${r.hasStockData?r.openingStock:''}","${r.suggested}","${r.s1}","${r.s2}","${r.s3}"\n`;
+  });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${state.month}_suggested_order.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ---- Product Hierarchy (reference) ---- */
+function renderHierarchyBrowser(){
+  const data = state.hierarchyData || [];
+  const byFamily = {};
+  data.forEach(r=>{ (byFamily[r.dcm_family] = byFamily[r.dcm_family]||[]).push(r); });
+  const families = Object.keys(byFamily).sort();
+  return `
+  <div class="panel">
+    <h3>Product Hierarchy <span class="cnt">${families.length} DCM families · ${data.length} SKUs</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>DCM Format / SKU</th><th>Code</th></tr></thead>
+      <tbody>
+      ${families.map(f=>`
+        <tr style="background:var(--brand-tint);"><td colspan="2" data-label="" style="font-weight:700;">${esc(f)} <span class="badge badge-gray" style="margin-left:6px;">${byFamily[f].length} SKUs</span></td></tr>
+        ${byFamily[f].map(s=>`<tr><td data-label="SKU" style="padding-left:20px;">${esc(s.sku_name)}</td><td data-label="Code" class="mono">${esc(s.sku_code)}</td></tr>`).join('')}
+      `).join('')}
+      </tbody>
+    </table>
+  </div>
+  <p class="footer-note">Note: this hierarchy's family groupings do not always match the target-setting family names used in the Achievement and Suggested Order screens — they're maintained as two separate classification systems in the source data.</p>`;
+}
+
+/* ---- Stock placeholder ---- */
+function renderStockPlaceholder(){
+  return `
+  <div class="panel">
+    <h3>Opening Stock &amp; Slow-Moving Analysis</h3>
+    <div class="empty-note" style="padding:40px 0;">
+      Awaiting opening stock data from the FGS/material team.<br>
+      Once uploaded (family-wise, town-wise), this screen will show stock availability and flag slow-moving families for alternate-product pushes — and the Suggested Order screen will automatically start netting it off.
+    </div>
+  </div>`;
+}
+
+/* ============================= NSM / ADMIN SHELL ============================= */
+function renderNsmShell(){
+  const isAdmin = state.user.role==='admin';
+  const tabs = [
+    {k:'achievement', l:'Achievement', ic:'●'},
+    {k:'suggested', l:'Suggested Order', ic:'▶'},
+    {k:'hierarchy', l:'Hierarchy', ic:'▤'},
+    {k:'stock', l:'Stock', ic:'▦'}
+  ];
+  if(isAdmin) tabs.push({k:'upload', l:'Upload', ic:'⬆'});
+  return `
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><img src="dil_logo.png" alt="DOLLAR"></div>
+      <div class="brand-text"><div class="t1">${isAdmin?'Sales Ops — Admin View':'Head Office — NSM View'}</div><div class="t2">All regions · ${RSM_IDS.length} RSMs · ${ALL_TOWNS.length} towns</div></div>
+    </div>
+    <div class="top-right">
+      <div class="today-pill">${monthLabel(state.month)}</div>
+      <button class="logout" onclick="doLogout()">Log out</button>
+    </div>
+  </div>
+  <div class="container">
+    <div class="row-flex" style="margin-bottom:16px;">
+      <div class="field" style="max-width:220px;">
+        <label>Month</label>
+        <select onchange="changeMonth(this.value)">
+          ${MONTH_OPTIONS.map(m=>`<option value="${m}" ${state.month===m?'selected':''}>${monthLabel(m)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="tabs desktop-tabs">
+      ${tabs.map(t=>`<button class="tab ${state.nsmView===t.k?'active':''}" onclick="setNsmView('${t.k}')">${t.l}</button>`).join('')}
+    </div>
+    <div id="nsmBody"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="bottom-nav"><div class="bottom-nav-row">
+    ${tabs.map(t=>`<button class="bottom-nav-item ${state.nsmView===t.k?'active':''}" onclick="setNsmView('${t.k}')"><span class="ic">${t.ic}</span>${t.l}</button>`).join('')}
+  </div></div>`;
+}
+function setNsmView(v){ state.nsmView=v; state.expandedRsm=null; state.selectedTown=null; state.expandedFamily=null; render(); }
+
+async function loadNsmView(){
+  const body = document.getElementById('nsmBody');
+  if(state.nsmView==='achievement'){
+    if(state.selectedTown){
+      if(!state.familyData) state.familyData = await fetchTownData(state.month, state.selectedTown, 'primary');
+      body.innerHTML = renderTownAchievementDetail(state.selectedTown, state.familyData);
+    } else if(state.expandedRsm){
+      const towns = TOWN_DATA[state.expandedRsm].towns;
+      if(!state.nsmFamilySummary) state.nsmFamilySummary = await buildTownSummaries(towns, state.month);
+      body.innerHTML = renderRsmTownGridWrapper(state.expandedRsm, towns, 'achievement');
+    } else {
+      body.innerHTML = await renderRsmSummaryAsync('achievement');
+    }
+  } else if(state.nsmView==='suggested'){
+    if(state.selectedTown){
+      if(!state.suggestedData) state.suggestedData = await computeSuggestedOrder(state.month, state.selectedTown);
+      body.innerHTML = renderSuggestedOrderDetail(state.selectedTown, state.suggestedData);
+    } else if(state.expandedRsm){
+      body.innerHTML = renderRsmTownGridWrapper(state.expandedRsm, TOWN_DATA[state.expandedRsm].towns, 'suggested');
+    } else {
+      body.innerHTML = await renderRsmSummaryAsync('suggested');
+    }
+  } else if(state.nsmView==='hierarchy'){
+    if(!state.hierarchyData) await fetchHierarchy();
+    body.innerHTML = renderHierarchyBrowser();
+  } else if(state.nsmView==='stock'){
+    body.innerHTML = renderStockPlaceholder();
+  } else if(state.nsmView==='upload'){
+    body.innerHTML = renderAdminUpload();
+  }
+}
+function drillRsm(id){ state.expandedRsm=id; state.nsmFamilySummary=null; render(); }
+function backToRsmSummary(){ state.expandedRsm=null; state.selectedTown=null; render(); }
+function renderRsmTownGridWrapper(rsmId, towns, mode){
+  return `
+  <div class="entry-screen-header"><button class="back-btn" onclick="backToRsmSummary()">←</button><h2>${esc(TOWN_DATA[rsmId].name)}</h2></div>
+  ${renderTownGrid(towns, state.nsmFamilySummary, mode)}`;
+}
+
+async function renderRsmSummaryAsync(mode){
+  const rows = await Promise.all(RSM_IDS.map(async id=>{
+    const towns = TOWN_DATA[id].towns;
+    const summaries = await buildTownSummaries(towns, state.month);
+    let target=0, achieved=0;
+    towns.forEach(t=>{ target+=summaries[t].target; achieved+=summaries[t].achieved; });
+    return {id, name:TOWN_DATA[id].name, target, achieved, townCount:towns.length};
+  }));
+  let totTarget=0, totAch=0;
+  rows.forEach(r=>{ totTarget+=r.target; totAch+=r.achieved; });
+  const pct = achPct(totTarget, totAch);
+  return `
+  <div class="cards-row">
+    <div class="stat-card"><div class="stat-label">Total Target — All Regions</div><div class="stat-value">${fmtQty(totTarget)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Achieved</div><div class="stat-value">${fmtQty(totAch)}</div></div>
+    <div class="stat-card"><div class="stat-label">Remaining Balance</div><div class="stat-value ${totTarget-totAch>0?'neg':'pos'}">${fmtQty(Math.max(totTarget-totAch,0))}</div></div>
+    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${fmtPct(pct)}</div></div>
+  </div>
+  <div class="panel">
+    <h3>${mode==='suggested'?'Suggested Orders':'Achievement vs Target'} — RSM-wise <span class="cnt">tap a row to drill into towns</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>RSM</th><th class="num">Target</th><th class="num">Achieved</th><th class="num">Balance</th><th>Achv.</th><th class="num">Towns</th></tr></thead>
+      <tbody>
+      ${rows.map(r=>{
+        const rpct = achPct(r.target, r.achieved);
+        return `<tr class="clickable" onclick="drillRsm('${r.id}')">
+          <td data-label="RSM"><b>${esc(r.name)}</b></td>
+          <td class="num" data-label="Target">${fmtQty(r.target)}</td>
+          <td class="num" data-label="Achieved">${fmtQty(r.achieved)}</td>
+          <td class="num ${r.target-r.achieved>0?'neg':''}" data-label="Balance">${fmtQty(Math.max(r.target-r.achieved,0))}</td>
+          <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(rpct,100)}%;background:${meterColor(rpct)}"></div></div></td>
+          <td class="num" data-label="Towns">${r.townCount}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+/* ============================= ADMIN UPLOAD ============================= */
+function setAdminUploadTab(t){ state.adminUploadTab=t; state.adminUploadResult=null; render(); }
+function renderAdminUpload(){
+  const tab = state.adminUploadTab;
+  return `
+  <div class="tabs" style="margin-bottom:18px;">
+    <button class="tab ${tab==='target'?'active':''}" onclick="setAdminUploadTab('target')">Target Upload</button>
+    <button class="tab ${tab==='achievement'?'active':''}" onclick="setAdminUploadTab('achievement')">Achievement Workbook</button>
+    <button class="tab ${tab==='stock'?'active':''}" onclick="setAdminUploadTab('stock')">Opening Stock</button>
+  </div>
+  ${tab==='target' ? renderTargetUploadPanel() : tab==='achievement' ? renderAchievementUploadPanel() : renderStockUploadPanel()}
+  `;
+}
+
+function renderTargetUploadPanel(){
+  const result = state.adminUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload Family-wise Target</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field">
+        <label>Month</label>
+        <input id="targetMonthInput" type="text" value="${state.adminTargetMonth}" placeholder="YYYY-MM" onchange="state.adminTargetMonth=this.value">
+      </div>
+      <div class="field">
+        <label>Town</label>
+        <select id="targetTownInput">
+          ${ALL_TOWNS.map(t=>`<option value="${esc(t)}" ${state.adminTargetTown===t?'selected':''}>${esc(t)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Family, Target Qty</code> — matches your territory target sheet's Item Description/family column and monthly qty. Uploading again for the same family/town/month overwrites the previous value.</p>
+    <textarea id="targetPasteInput" rows="8" placeholder="Ink F Pen 15ml, 2082
+Ink F Pen 30ml, 2377
+Ball Pen BP-1, 5400" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleTargetUpload()">Upload Target</button>
+    ${result && result.kind==='target' ? renderUploadResultBox(result) : ''}
+  </div>`;
+}
+async function handleTargetUpload(){
+  const month = document.getElementById('targetMonthInput').value.trim();
+  const town = document.getElementById('targetTownInput').value;
+  const text = document.getElementById('targetPasteInput').value;
+  if(!month || !text.trim()){ alert('Enter a month and paste at least one line.'); return; }
+  const res = await uploadTargetBulk(month, town, text);
+  state.adminTargetMonth = month; state.adminTargetTown = town;
+  state.adminUploadResult = {kind:'target', ...res};
+  render();
+}
+
+function renderAchievementUploadPanel(){
+  const result = state.adminUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload Achievement Workbook</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field">
+        <label>Month</label>
+        <input id="achMonthInput" type="text" value="${state.adminAchMonth}" placeholder="YYYY-MM" onchange="state.adminAchMonth=this.value">
+      </div>
+      <div class="field">
+        <label>Type</label>
+        <select id="achTypeInput" onchange="state.adminAchType=this.value">
+          <option value="primary" ${state.adminAchType==='primary'?'selected':''}>Primary</option>
+          <option value="secondary" ${state.adminAchType==='secondary'?'selected':''}>Secondary</option>
+        </select>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Upload the full "Achievement vs Target" workbook exactly as your existing report is formatted — one sheet per town, SKU rows followed by a family subtotal row (same structure as the July file). All town sheets in the workbook are processed in one go; region-rollup sheets are skipped automatically.
+    </p>
+    <label class="upload-box" for="achFileInput">
+      <div style="font-size:28px;margin-bottom:8px;">⬆</div>
+      <div style="font-weight:600;">Click to choose the .xlsx workbook</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;">Large files may take a minute to process — don't close the tab.</div>
+      <input id="achFileInput" type="file" accept=".xlsx,.xls" onchange="handleAchievementUpload(this.files[0])">
+    </label>
+    <div id="achUploadStatus"></div>
+    ${result && result.kind==='achievement' ? renderUploadResultBox(result) : ''}
+  </div>`;
+}
+async function handleAchievementUpload(file){
+  if(!file) return;
+  const month = document.getElementById('achMonthInput').value.trim();
+  const type = document.getElementById('achTypeInput').value;
+  if(!month){ alert('Enter a month first.'); return; }
+  document.getElementById('achUploadStatus').innerHTML = '<div class="loading">Processing workbook — this can take a minute for large files…</div>';
+  try{
+    const res = await uploadAchievementWorkbook(file, month, type);
+    state.adminAchMonth = month; state.adminAchType = type;
+    state.adminUploadResult = {kind:'achievement', ...res};
+    render();
+  }catch(e){
+    document.getElementById('achUploadStatus').innerHTML = `<div class="err">Failed to process file: ${esc(e.message||String(e))}</div>`;
+  }
+}
+
+function renderStockUploadPanel(){
+  const result = state.adminUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload Opening Stock (Family-wise)</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field">
+        <label>Month (stock opening for)</label>
+        <input id="stockMonthInput" type="text" value="${state.adminTargetMonth}" placeholder="YYYY-MM">
+      </div>
+      <div class="field">
+        <label>Town</label>
+        <select id="stockTownInput">
+          ${ALL_TOWNS.map(t=>`<option value="${esc(t)}" ${state.adminTargetTown===t?'selected':''}>${esc(t)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Family, Opening Stock Qty</code>. If FGS only gives you one company-wide figure per family (not per-town), upload the same number under every town for now.</p>
+    <textarea id="stockPasteInput" rows="8" placeholder="Ink F Pen 15ml, 500
+Ink F Pen 30ml, 1200" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleStockUpload()">Upload Stock</button>
+    ${result && result.kind==='stock' ? renderUploadResultBox(result) : ''}
+  </div>`;
+}
+async function handleStockUpload(){
+  const month = document.getElementById('stockMonthInput').value.trim();
+  const town = document.getElementById('stockTownInput').value;
+  const text = document.getElementById('stockPasteInput').value;
+  if(!month || !text.trim()){ alert('Enter a month and paste at least one line.'); return; }
+  const res = await uploadStockBulk(month, town, text);
+  state.adminUploadResult = {kind:'stock', ...res};
+  render();
+}
+
+function renderUploadResultBox(r){
+  if(!r.ok) return `<div class="err" style="margin-top:12px;">Upload failed: ${esc(r.error)}</div>`;
+  let html = `<div style="margin-top:12px;padding:12px 14px;border-radius:8px;background:var(--green-bg);font-size:12.5px;">`;
+  if(r.kind==='achievement'){
+    html += `<b>${r.sheetsProcessed} town sheets processed</b> — ${r.familyRows} family rows, ${r.skuRows} SKU rows upserted.`;
+    if(r.townsUnmatched && r.townsUnmatched.length){
+      html += `<div style="margin-top:6px;color:var(--amber);">${r.townsUnmatched.length} sheet(s) skipped — town name not recognized:<br>${r.townsUnmatched.map(esc).join('<br>')}</div>`;
+    }
+  } else {
+    html += `<b>${r.count} row(s) updated.</b>`;
+    if(r.unmatched && r.unmatched.length){
+      html += `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) couldn't be parsed:<br>${r.unmatched.map(esc).join('<br>')}</div>`;
+    }
+  }
+  html += `</div>`;
+  return html;
+}
+
+/* ============================= AUTO-REFRESH ON RESUME ============================= */
+function refreshCurrentViewData(){
+  if(!state.user) return;
+  state.familyData=null; state.suggestedData=null; state.nsmFamilySummary=null; state.hierarchyData=null;
+  render();
+}
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
+window.addEventListener('pageshow', (e)=>{ if(e.persisted) refreshCurrentViewData(); });
+
+/* ============================= INIT ============================= */
+restoreSession();
+render();
+</script>
+</body>
+</html>
