@@ -222,10 +222,13 @@ let state = {
   loginError:'',
   month:'2026-07',
   rsmView:'achievement',      // achievement | hierarchy | stock
+  viewMode:'volume',          // volume | value
   selectedTown:null,
   expandedFamily:null,
   familyData:null,            // cached: {family: {target,achieved,variance}}
   skuData:null,               // cached: {family: [{sku_code,sku_name,qty}]}
+  orderPlanData:null,         // cached: order plan workflow view for the selected town
+  auditLogData:null,
   nsmView:'achievement',      // achievement | hierarchy | stock | upload
   expandedRsm:null,
   nsmFamilySummary:null,      // per-rsm rollup for current month
@@ -296,12 +299,12 @@ async function fetchSkuAchievement(month, town, type){
   if(error){ console.error(error); return []; }
   return data||[];
 }
-async function fetchSkuNames(codes){
+async function fetchSkuMeta(codes){
   if(!sb || !codes.length) return {};
-  const {data, error} = await sb.from('product_hierarchy').select('sku_code,sku_name').in('sku_code', codes);
+  const {data, error} = await sb.from('product_hierarchy').select('sku_code,sku_name,price,uom').in('sku_code', codes);
   if(error){ console.error(error); return {}; }
   const map = {};
-  (data||[]).forEach(r=> map[r.sku_code]=r.sku_name);
+  (data||[]).forEach(r=> map[r.sku_code]={sku_name:r.sku_name, price:Number(r.price)||0, uom:r.uom||'PCS'});
   return map;
 }
 async function fetchTownData(month, town, type){
@@ -310,12 +313,22 @@ async function fetchTownData(month, town, type){
     fetchSkuAchievement(month, town, type)
   ]);
   const skuCodes = [...new Set(skuRows.map(r=>r.sku_code))];
-  const nameMap = await fetchSkuNames(skuCodes);
+  const metaMap = await fetchSkuMeta(skuCodes);
   const byFamily = {};
-  famRows.forEach(f=>{ byFamily[f.family] = { target:Number(f.target_qty)||0, achieved:Number(f.achieved_qty)||0, variance:Number(f.variance_qty!==undefined?f.variance_qty:f.variance)||0, skus:[] }; });
+  famRows.forEach(f=>{ byFamily[f.family] = { target:Number(f.target_qty)||0, achieved:Number(f.achieved_qty)||0, variance:Number(f.variance_qty!==undefined?f.variance_qty:f.variance)||0, achievedValue:0, hasPricing:false, skus:[] }; });
   skuRows.forEach(r=>{
-    if(!byFamily[r.family]) byFamily[r.family] = {target:0, achieved:0, variance:0, skus:[]};
-    byFamily[r.family].skus.push({ sku_code:r.sku_code, sku_name: nameMap[r.sku_code] || r.sku_code, qty: Number(r.qty)||0 });
+    if(!byFamily[r.family]) byFamily[r.family] = {target:0, achieved:0, variance:0, achievedValue:0, hasPricing:false, skus:[]};
+    const meta = metaMap[r.sku_code] || {sku_name:r.sku_code, price:0, uom:'PCS'};
+    const qty = Number(r.qty)||0;
+    const value = qty * meta.price;
+    byFamily[r.family].skus.push({ sku_code:r.sku_code, sku_name: meta.sku_name, uom: meta.uom, price: meta.price, qty, value });
+    byFamily[r.family].achievedValue += value;
+    if(meta.price>0) byFamily[r.family].hasPricing = true;
+  });
+  // Estimate each family's target value using its own achieved blended price (qty-weighted avg selling price this month)
+  Object.values(byFamily).forEach(f=>{
+    f.avgPrice = f.achieved>0 ? f.achievedValue/f.achieved : 0;
+    f.targetValueEst = f.avgPrice>0 ? f.target * f.avgPrice : 0;
   });
   return byFamily;
 }
@@ -372,6 +385,239 @@ async function computeSuggestedOrder(month, town){
   const stockUploaded = Object.keys(stock).length > 0;
   return {rows, stockUploaded, priorMonth:prior};
 }
+
+/* ============================= ORDER PLAN WORKFLOW ============================= */
+// HO reviews the system suggestion and can override it (ho_qty), then explicitly
+// submits a town/month so it becomes visible to that town's RSM. The RSM can
+// further adjust (rsm_qty) before downloading.
+async function fetchOrderPlan(month, town){
+  if(!sb) return {};
+  const {data, error} = await sb.from('monthly_order_plan').select('*').eq('month',month).eq('town',town);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.family] = { hoQty: r.ho_qty==null?null:Number(r.ho_qty), rsmQty: r.rsm_qty==null?null:Number(r.rsm_qty) });
+  return map;
+}
+async function fetchOrderPlanStatus(month, town){
+  if(!sb) return {submitted:false, submitted_at:null};
+  const {data, error} = await sb.from('monthly_order_plan_status').select('*').eq('month',month).eq('town',town).maybeSingle();
+  if(error){ console.error(error); return {submitted:false, submitted_at:null}; }
+  return data ? {submitted:!!data.submitted, submitted_at:data.submitted_at} : {submitted:false, submitted_at:null};
+}
+async function fetchOrderPlanStatusForTowns(month, towns){
+  if(!sb) return {};
+  const {data, error} = await sb.from('monthly_order_plan_status').select('*').eq('month',month).in('town', towns);
+  if(error){ console.error(error); return {}; }
+  const map = {};
+  (data||[]).forEach(r=> map[r.town] = {submitted:!!r.submitted, submitted_at:r.submitted_at});
+  return map;
+}
+
+/* Builds the full view for one town: system suggestion merged with HO/RSM overrides. */
+async function fetchFamilyBlendedPrices(month, town){
+  const skuRows = await fetchSkuAchievement(month, town, 'primary');
+  if(!skuRows.length) return {};
+  const codes = [...new Set(skuRows.map(r=>r.sku_code))];
+  const meta = await fetchSkuMeta(codes);
+  const totals = {};
+  skuRows.forEach(r=>{
+    const price = (meta[r.sku_code]||{}).price || 0;
+    const qty = Number(r.qty)||0;
+    if(!totals[r.family]) totals[r.family] = {qty:0, value:0};
+    totals[r.family].qty += qty;
+    totals[r.family].value += qty*price;
+  });
+  const avg = {};
+  Object.keys(totals).forEach(f=> avg[f] = totals[f].qty>0 ? totals[f].value/totals[f].qty : 0);
+  return avg;
+}
+
+async function buildOrderPlanView(month, town){
+  const prior = prevMonth(month);
+  const [suggestedData, planMap, status, skuValueDetail, blendedPricesCur, blendedPricesPrior] = await Promise.all([
+    computeSuggestedOrder(month, town),
+    fetchOrderPlan(month, town),
+    fetchOrderPlanStatus(month, town),
+    fetchOrderPlanSkuValue(month, town),
+    fetchFamilyBlendedPrices(month, town),
+    fetchFamilyBlendedPrices(prior, town)
+  ]);
+  const rows = suggestedData.rows.map(r=>{
+    const plan = planMap[r.family] || {hoQty:null, rsmQty:null};
+    const hoQty = plan.hoQty!=null ? plan.hoQty : r.suggested;      // HO sees system suggestion until they override
+    const rsmQty = plan.rsmQty!=null ? plan.rsmQty : hoQty;         // RSM sees HO's number until they override
+    const s1 = Math.round(rsmQty*0.5), s2 = Math.round(rsmQty*0.25), s3 = Math.max(rsmQty-s1-s2,0);
+    const avgPrice = blendedPricesCur[r.family] || blendedPricesPrior[r.family] || 0;
+    const hasExactValue = r.family in skuValueDetail.byFamily;
+    const hoValue = hasExactValue ? skuValueDetail.byFamily[r.family] : hoQty*avgPrice;
+    const rsmValue = rsmQty*avgPrice; // RSM's own adjustment is always family-level, so always estimated
+    return {...r, hoQtySaved:plan.hoQty, rsmQtySaved:plan.rsmQty, hoQty, rsmQty, s1, s2, s3, avgPrice, hoValue, rsmValue, hasExactValue};
+  });
+  return {rows, stockUploaded:suggestedData.stockUploaded, priorMonth:suggestedData.priorMonth, status, anyPricing: Object.values(rows).some(r=>r.avgPrice>0)};
+}
+
+async function dbSaveHoQty(month, town, family, qty){
+  const {error} = await sb.from('monthly_order_plan').upsert({month, town, family, ho_qty:qty}, {onConflict:'month,town,family'});
+  if(error){ alert('Could not save: '+error.message); return false; }
+  return true;
+}
+async function dbSaveRsmQty(month, town, family, qty){
+  const {error} = await sb.from('monthly_order_plan').upsert({month, town, family, rsm_qty:qty}, {onConflict:'month,town,family'});
+  if(error){ alert('Could not save: '+error.message); return false; }
+  return true;
+}
+async function dbSubmitToRsm(month, town){
+  const {error} = await sb.from('monthly_order_plan_status').upsert({month, town, submitted:true, submitted_at:new Date().toISOString()}, {onConflict:'month,town'});
+  if(error){ alert('Could not submit: '+error.message); return false; }
+  return true;
+}
+async function dbUnsubmit(month, town){
+  const {error} = await sb.from('monthly_order_plan_status').upsert({month, town, submitted:false, submitted_at:null}, {onConflict:'month,town'});
+  if(error){ alert('Could not update: '+error.message); return false; }
+  return true;
+}
+
+/* ============================= AUDIT LOG ============================= */
+async function logAudit(action, month, town, details){
+  if(!sb || !state.user) return;
+  try{
+    await sb.from('audit_log').insert({
+      actor: state.user.username, role: state.user.role, action, month: month||null, town: town||null, details: details||''
+    });
+  }catch(e){ console.error('audit log failed', e); }
+}
+async function fetchAuditLog(limit){
+  if(!sb) return [];
+  const {data, error} = await sb.from('audit_log').select('*').order('at',{ascending:false}).limit(limit||200);
+  if(error){ console.error(error); return []; }
+  return data||[];
+}
+
+/* ============================= SKU -> ACHIEVEMENT-FAMILY RESOLVER ============================= */
+// Target-setting family names don't reliably match the DCM hierarchy (see project
+// notes), but every SKU code IS reliably tagged with its achievement-family in
+// monthly_achievement_sku. We use that as the join key for rolling SKU-wise
+// uploads (stock, HO qty) up to family level, regardless of which month/town
+// the mapping was first observed in — a SKU's family classification is stable.
+let skuFamilyMapCache = null;
+async function buildSkuFamilyMap(){
+  if(skuFamilyMapCache) return skuFamilyMapCache;
+  if(!sb) return {};
+  const {data, error} = await sb.from('monthly_achievement_sku').select('sku_code,family');
+  if(error){ console.error(error); return {}; }
+  const counts = {}; // sku_code -> {family -> occurrences}
+  (data||[]).forEach(r=>{
+    if(!counts[r.sku_code]) counts[r.sku_code] = {};
+    counts[r.sku_code][r.family] = (counts[r.sku_code][r.family]||0)+1;
+  });
+  const map = {};
+  Object.keys(counts).forEach(code=>{
+    const fams = counts[code];
+    map[code] = Object.keys(fams).sort((a,b)=>fams[b]-fams[a])[0]; // most-frequently-seen family wins
+  });
+  skuFamilyMapCache = map;
+  return map;
+}
+
+/* ---- SKU-wise opening stock upload, all towns in one paste ---- */
+// Expected format per line: Town, SKU Code, Qty
+async function uploadStockSkuWiseBulk(month, text){
+  const familyMap = await buildSkuFamilyMap();
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const skuRows = [], unmatched = [];
+  const familyTotals = {}; // town -> family -> qty
+
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<3){ unmatched.push(line); return; }
+    const [town, skuCode, rawQty] = parts;
+    const qty = Number(String(rawQty).replace(/,/g,''));
+    if(!ALL_TOWNS.includes(town) || isNaN(qty)){ unmatched.push(line); return; }
+    const family = familyMap[skuCode];
+    if(!family){ unmatched.push(line+'  (SKU not recognized from any achievement report yet)'); return; }
+    skuRows.push({month, town, sku_code:skuCode, qty});
+    familyTotals[town] = familyTotals[town] || {};
+    familyTotals[town][family] = (familyTotals[town][family]||0) + qty;
+  });
+
+  if(skuRows.length){
+    const {error} = await sb.from('opening_stock_sku').upsert(skuRows, {onConflict:'month,town,sku_code'});
+    if(error) return {ok:false, error:error.message};
+  }
+  const familyRows = [];
+  Object.keys(familyTotals).forEach(town=>{
+    Object.keys(familyTotals[town]).forEach(family=>{
+      familyRows.push({month, town, family, qty: familyTotals[town][family]});
+    });
+  });
+  if(familyRows.length){
+    const {error} = await sb.from('opening_stock_family').upsert(familyRows, {onConflict:'month,town,family'});
+    if(error) return {ok:false, error:error.message};
+  }
+  const townCount = Object.keys(familyTotals).length;
+  await logAudit('stock_sku_upload', month, null, `${skuRows.length} SKUs across ${townCount} towns → ${familyRows.length} family totals updated`);
+  return {ok:true, skuCount:skuRows.length, familyCount:familyRows.length, townCount, unmatched};
+}
+
+/* ---- SKU-wise HO order qty upload, all towns in one paste ---- */
+// Expected format per line: Town, SKU Code, Qty
+async function uploadHoQtySkuWiseBulk(month, text){
+  const familyMap = await buildSkuFamilyMap();
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const skuRows = [], unmatched = [];
+  const familyTotals = {};
+
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<3){ unmatched.push(line); return; }
+    const [town, skuCode, rawQty] = parts;
+    const qty = Number(String(rawQty).replace(/,/g,''));
+    if(!ALL_TOWNS.includes(town) || isNaN(qty)){ unmatched.push(line); return; }
+    const family = familyMap[skuCode];
+    if(!family){ unmatched.push(line+'  (SKU not recognized from any achievement report yet)'); return; }
+    skuRows.push({month, town, sku_code:skuCode, ho_qty:qty});
+    familyTotals[town] = familyTotals[town] || {};
+    familyTotals[town][family] = (familyTotals[town][family]||0) + qty;
+  });
+
+  if(skuRows.length){
+    const {error} = await sb.from('order_plan_sku').upsert(skuRows, {onConflict:'month,town,sku_code'});
+    if(error) return {ok:false, error:error.message};
+  }
+  const familyRows = [];
+  Object.keys(familyTotals).forEach(town=>{
+    Object.keys(familyTotals[town]).forEach(family=>{
+      familyRows.push({month, town, family, ho_qty: familyTotals[town][family]});
+    });
+  });
+  if(familyRows.length){
+    const {error} = await sb.from('monthly_order_plan').upsert(familyRows, {onConflict:'month,town,family'});
+    if(error) return {ok:false, error:error.message};
+  }
+  const townCount = Object.keys(familyTotals).length;
+  await logAudit('ho_qty_sku_bulk_upload', month, null, `${skuRows.length} SKUs across ${townCount} towns → ${familyRows.length} family HO qty values updated`);
+  return {ok:true, skuCount:skuRows.length, familyCount:familyRows.length, townCount, unmatched};
+}
+
+/* ---- SKU-level value lookup for the Order Plan value view ---- */
+async function fetchOrderPlanSkuValue(month, town){
+  if(!sb) return {byFamily:{}, hasDetail:false};
+  const {data, error} = await sb.from('order_plan_sku').select('*').eq('month',month).eq('town',town);
+  if(error || !data || !data.length) return {byFamily:{}, hasDetail:false};
+  const familyMap = await buildSkuFamilyMap();
+  const skuCodes = data.map(r=>r.sku_code);
+  const priceMap = await fetchSkuMeta(skuCodes);
+  const byFamily = {};
+  data.forEach(r=>{
+    const family = familyMap[r.sku_code];
+    if(!family) return;
+    const price = (priceMap[r.sku_code]||{}).price || 0;
+    byFamily[family] = (byFamily[family]||0) + (Number(r.ho_qty)||0) * price;
+  });
+  return {byFamily, hasDetail:true};
+}
+
+
 
 async function uploadStockBulk(month, town, text){
   const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
@@ -531,7 +777,7 @@ function renderRsmShell(){
   const towns = TOWN_DATA[state.user.rsmId].towns;
   const tabs = [
     {k:'achievement', l:'Achievement', ic:'●'},
-    {k:'suggested', l:'Suggested Order', ic:'▶'},
+    {k:'suggested', l:'Order Plan', ic:'▶'},
     {k:'hierarchy', l:'Hierarchy', ic:'▤'},
     {k:'stock', l:'Stock', ic:'▦'}
   ];
@@ -580,8 +826,8 @@ async function loadRsmView(){
     }
   } else if(state.rsmView==='suggested'){
     if(state.selectedTown){
-      if(!state.suggestedData) state.suggestedData = await computeSuggestedOrder(state.month, state.selectedTown);
-      body.innerHTML = renderSuggestedOrderDetail(state.selectedTown, state.suggestedData);
+      if(!state.orderPlanData) state.orderPlanData = await buildOrderPlanView(state.month, state.selectedTown);
+      body.innerHTML = renderOrderPlanDetail(state.selectedTown, state.orderPlanData, 'rsm');
     } else {
       body.innerHTML = renderTownGrid(towns, null, 'suggested');
     }
@@ -608,7 +854,7 @@ function renderTownGrid(towns, summaries, mode){
   const sorted = summaries ? [...towns].sort((a,b)=> achPct(summaries[a].target,summaries[a].achieved) - achPct(summaries[b].target,summaries[b].achieved)) : towns;
   return `
   <div class="panel">
-    <h3>${mode==='suggested' ? 'Suggested Orders — by Town' : 'Achievement vs Target — by Town'} <span class="cnt">tap a town for detail${summaries?' · lowest achievement first':''}</span></h3>
+    <h3>${mode==='suggested' ? 'Order Plan — by Town' : 'Achievement vs Target — by Town'} <span class="cnt">tap a town for detail${summaries?' · lowest achievement first':''}</span></h3>
     <div class="town-grid">
       ${sorted.map(t=>{
         if(mode==='suggested'){
@@ -631,18 +877,33 @@ function renderTownGrid(towns, summaries, mode){
     </div>
   </div>`;
 }
-function selectTown(t){ state.selectedTown=t; state.familyData=null; state.suggestedData=null; state.expandedFamily=null; render(); }
+function selectTown(t){ state.selectedTown=t; state.familyData=null; state.orderPlanData=null; state.expandedFamily=null; render(); }
 function backToTownGrid(){ state.selectedTown=null; state.expandedFamily=null; render(); }
 function toggleFamily(fam){ state.expandedFamily = state.expandedFamily===fam ? null : fam; render(); }
 
+function setViewMode(v){ state.viewMode=v; render(); }
+function fmtRs(n){ n=Number(n)||0; return 'Rs '+Math.round(n).toLocaleString('en-US'); }
+function viewToggleHtml(){
+  return `<div class="tabs" style="margin:0 0 16px;">
+    <button class="tab ${state.viewMode==='volume'?'active':''}" onclick="setViewMode('volume')">Volume (units)</button>
+    <button class="tab ${state.viewMode==='value'?'active':''}" onclick="setViewMode('value')">Value (Rs)</button>
+  </div>`;
+}
+
 function renderTownAchievementDetail(town, familyData){
+  const isVal = state.viewMode==='value';
+  const anyPricing = Object.values(familyData).some(d=>d.hasPricing);
   const families = Object.keys(familyData).sort((a,b)=>{
-    const va = familyData[a].target - familyData[a].achieved;
-    const vb = familyData[b].target - familyData[b].achieved;
-    return vb - va; // biggest shortfall first
+    const va = isVal ? (familyData[a].targetValueEst - familyData[a].achievedValue) : (familyData[a].target - familyData[a].achieved);
+    const vb = isVal ? (familyData[b].targetValueEst - familyData[b].achievedValue) : (familyData[b].target - familyData[b].achieved);
+    return vb - va;
   });
+  const fmt = isVal ? fmtRs : fmtQty;
   let totTarget=0, totAch=0;
-  families.forEach(f=>{ totTarget+=familyData[f].target; totAch+=familyData[f].achieved; });
+  families.forEach(f=>{
+    totTarget += isVal ? familyData[f].targetValueEst : familyData[f].target;
+    totAch += isVal ? familyData[f].achievedValue : familyData[f].achieved;
+  });
   const pct = achPct(totTarget, totAch);
   return `
   <div class="entry-screen-header">
@@ -650,37 +911,43 @@ function renderTownAchievementDetail(town, familyData){
     <h2>${esc(town)} — ${monthLabel(state.month)}</h2>
     <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadTownCsv('${escJs(town)}')">⬇ Download CSV</button>
   </div>
+  ${viewToggleHtml()}
+  ${isVal && !anyPricing ? `<div class="err" style="background:var(--amber-bg);color:var(--amber);">No SKU prices configured yet in Product Hierarchy — value figures will show as Rs 0 until prices are uploaded.</div>` : ''}
+  ${isVal && anyPricing ? `<div class="footer-note" style="text-align:left;margin:0 0 16px;">Target value is <b>estimated</b> — it's this month's actual blended selling price applied to the unit target, since targets are only set in units, not value.</div>` : ''}
   <div class="cards-row">
-    <div class="stat-card"><div class="stat-label">Total Target</div><div class="stat-value">${fmtQty(totTarget)}</div></div>
-    <div class="stat-card"><div class="stat-label">Total Achieved</div><div class="stat-value">${fmtQty(totAch)}</div></div>
-    <div class="stat-card"><div class="stat-label">Remaining Balance</div><div class="stat-value ${totTarget-totAch>0?'neg':'pos'}">${fmtQty(Math.max(totTarget-totAch,0))}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Target</div><div class="stat-value">${fmt(totTarget)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Achieved</div><div class="stat-value">${fmt(totAch)}</div></div>
+    <div class="stat-card"><div class="stat-label">Remaining Balance</div><div class="stat-value ${totTarget-totAch>0?'neg':'pos'}">${fmt(Math.max(totTarget-totAch,0))}</div></div>
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${fmtPct(pct)}</div></div>
   </div>
   <div class="panel">
     <h3>Family-wise (Primary) <span class="cnt">${families.length} families · tap to see SKUs</span></h3>
     <table class="responsive-table">
-      <thead><tr><th>Family</th><th class="num">Target</th><th class="num">Achieved</th><th class="num">Variance</th><th class="num">Balance</th><th>Achv.</th></tr></thead>
+      <thead><tr><th>Family</th><th class="num">Target${isVal?' (est.)':''}</th><th class="num">Achieved</th><th class="num">Variance</th><th class="num">Balance</th><th>Achv.</th></tr></thead>
       <tbody>
       ${families.map(f=>{
         const d = familyData[f];
-        const fpct = achPct(d.target, d.achieved);
-        const balance = Math.max(d.target - d.achieved, 0);
+        const target = isVal ? d.targetValueEst : d.target;
+        const achieved = isVal ? d.achievedValue : d.achieved;
+        const variance = achieved - target;
+        const fpct = achPct(target, achieved);
+        const balance = Math.max(target - achieved, 0);
         const expanded = state.expandedFamily===f;
-        const skuRows = expanded ? d.skus.slice().sort((a,b)=>b.qty-a.qty).map(s=>`
+        const skuRows = expanded ? d.skus.slice().sort((a,b)=> (isVal?b.value-a.value:b.qty-a.qty)).map(s=>`
           <tr class="sku-subrow">
-            <td data-label="SKU">${esc(s.sku_name)} <span class="mono" style="color:var(--muted);font-size:11px;">(${esc(s.sku_code)})</span></td>
+            <td data-label="SKU">${esc(s.sku_name)} <span class="mono" style="color:var(--muted);font-size:11px;">(${esc(s.sku_code)}${s.uom?', '+esc(s.uom):''})</span></td>
             <td class="num" data-label="Target">—</td>
-            <td class="num" data-label="Achieved">${fmtQty(s.qty)}</td>
+            <td class="num" data-label="Achieved">${isVal ? fmtRs(s.value) : fmtQty(s.qty)}</td>
             <td class="num" data-label="Variance">—</td>
             <td class="num" data-label="Balance">—</td>
             <td data-label="Achv.">—</td>
           </tr>`).join('') : '';
         return `<tr class="family-row" onclick="toggleFamily('${escJs(f)}')">
           <td data-label="Family"><span class="expand-caret">${expanded?'▾':'▸'}</span>${esc(f)}</td>
-          <td class="num" data-label="Target">${fmtQty(d.target)}</td>
-          <td class="num" data-label="Achieved">${fmtQty(d.achieved)}</td>
-          <td class="num ${d.variance>=0?'pos':'neg'}" data-label="Variance">${fmtQty(d.variance)}</td>
-          <td class="num ${balance>0?'neg':''}" data-label="Balance">${fmtQty(balance)}</td>
+          <td class="num" data-label="Target">${fmt(target)}</td>
+          <td class="num" data-label="Achieved">${fmt(achieved)}</td>
+          <td class="num ${variance>=0?'pos':'neg'}" data-label="Variance">${fmt(variance)}</td>
+          <td class="num ${balance>0?'neg':''}" data-label="Balance">${fmt(balance)}</td>
           <td data-label="Achv."><div class="meter"><div class="meter-fill" style="width:${Math.min(fpct,100)}%;background:${meterColor(fpct)}"></div></div></td>
         </tr>${skuRows}`;
       }).join('')}
@@ -693,14 +960,14 @@ function renderTownAchievementDetail(town, familyData){
 function downloadTownCsv(town){
   const d = state.familyData;
   if(!d) return;
-  let csv = 'Family,SKU Code,SKU Name,Target (Family),Achieved (Family),Variance (Family),SKU Qty\n';
+  let csv = 'Family,SKU Code,SKU Name,UOM,Price,Target Qty (Family),Achieved Qty (Family),Variance Qty (Family),Target Value Est (Family),Achieved Value (Family),SKU Qty,SKU Value\n';
   Object.keys(d).forEach(f=>{
     const fam = d[f];
     if(fam.skus.length===0){
-      csv += `"${f}",,,"${fam.target}","${fam.achieved}","${fam.variance}",\n`;
+      csv += `"${f}",,,,,"${fam.target}","${fam.achieved}","${fam.variance}","${fam.targetValueEst.toFixed(2)}","${fam.achievedValue.toFixed(2)}",,\n`;
     } else {
       fam.skus.forEach(s=>{
-        csv += `"${f}","${s.sku_code}","${s.sku_name}","${fam.target}","${fam.achieved}","${fam.variance}","${s.qty}"\n`;
+        csv += `"${f}","${s.sku_code}","${s.sku_name}","${s.uom}","${s.price}","${fam.target}","${fam.achieved}","${fam.variance}","${fam.targetValueEst.toFixed(2)}","${fam.achievedValue.toFixed(2)}","${s.qty}","${s.value.toFixed(2)}"\n`;
       });
     }
   });
@@ -712,57 +979,121 @@ function downloadTownCsv(town){
   URL.revokeObjectURL(url);
 }
 
-/* ---- Suggested Order ---- */
-function renderSuggestedOrderDetail(town, data){
-  const {rows, stockUploaded, priorMonth} = data;
-  const totSuggested = rows.reduce((s,r)=>s+r.suggested,0);
+/* ---- Order Plan (HO review -> submit -> RSM adjust -> download) ---- */
+function renderOrderPlanDetail(town, data, role){
+  const {rows, stockUploaded, priorMonth, status, anyPricing} = data;
+  const isAdmin = role==='admin';
+  const isRsm = role==='rsm';
+
+  // RSM sees nothing until HO has submitted this town/month
+  if(isRsm && !status.submitted){
+    return `
+    <div class="entry-screen-header"><button class="back-btn" onclick="backToTownGrid()">←</button><h2>${esc(town)} — Order Plan</h2></div>
+    <div class="empty-note" style="padding:40px 0;">Head office hasn't released the ${monthLabel(state.month)} order plan for this town yet. Check back once it's submitted.</div>`;
+  }
+
+  const isVal = state.viewMode==='value';
+  const activeField = isAdmin ? 'hoQty' : 'rsmQty';
+  const activeValueField = isAdmin ? 'hoValue' : 'rsmValue';
+  const totActive = rows.reduce((s,r)=>s+r[activeField],0);
+  const totActiveValue = rows.reduce((s,r)=>s+r[activeValueField],0);
   const tot1 = rows.reduce((s,r)=>s+r.s1,0), tot2 = rows.reduce((s,r)=>s+r.s2,0), tot3 = rows.reduce((s,r)=>s+r.s3,0);
+
   return `
   <div class="entry-screen-header">
     <button class="back-btn" onclick="backToTownGrid()">←</button>
-    <h2>${esc(town)} — Suggested Order for ${monthLabel(state.month)}</h2>
-    <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="downloadSuggestedCsv('${escJs(town)}')">⬇ Download CSV</button>
+    <h2>${esc(town)} — Order Plan for ${monthLabel(state.month)}</h2>
+    <span class="badge badge-${status.submitted?'green':'amber'}" style="margin-left:auto;">${status.submitted?'Submitted to RSM':'Draft — not yet submitted'}</span>
+    ${isRsm ? `<button class="btn btn-ghost btn-sm" onclick="downloadOrderPlanCsv('${escJs(town)}')">⬇ Download CSV</button>` : ''}
   </div>
-  ${!stockUploaded ? `<div class="err" style="background:var(--amber-bg);color:var(--amber);">Opening stock for ${monthLabel(state.month)} hasn't been uploaded yet — this suggestion is based on target + ${monthLabel(priorMonth)} shortfall only, before stock is netted off.</div>` : ''}
+  ${viewToggleHtml()}
+  ${!stockUploaded ? `<div class="err" style="background:var(--amber-bg);color:var(--amber);">Opening stock for ${monthLabel(state.month)} hasn't been uploaded yet — the system suggestion is based on target + ${monthLabel(priorMonth)} shortfall only, before stock is netted off.</div>` : ''}
+  ${isVal && !anyPricing ? `<div class="err" style="background:var(--amber-bg);color:var(--amber);">No SKU prices configured yet — value figures will show as Rs 0 until prices are uploaded in SKU Pricing.</div>` : ''}
+  ${isAdmin ? `<p class="footer-note" style="text-align:left;">Edit "HO Qty" per family below to override the system suggestion, then hit <b>Submit to RSM</b> when ready — nothing below is visible to the RSM until you submit. Quantities are always entered in units; value is shown alongside for reference.</p>` : ''}
+  ${isRsm ? `<p class="footer-note" style="text-align:left;">Head office's numbers are shown as "HO Qty". Adjust "Your Qty" per family if needed — the 3-supply split updates automatically. Download once you're happy with it.</p>` : ''}
   <div class="cards-row">
-    <div class="stat-card"><div class="stat-label">Total Suggested Order</div><div class="stat-value">${fmtQty(totSuggested)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total ${isAdmin?'HO':isRsm?'Your':'Final'} Qty</div><div class="stat-value">${isVal ? fmtRs(totActiveValue) : fmtQty(totActive)}</div></div>
     <div class="stat-card"><div class="stat-label">1st Supply (50%)</div><div class="stat-value">${fmtQty(tot1)}</div></div>
     <div class="stat-card"><div class="stat-label">2nd Supply (25%)</div><div class="stat-value">${fmtQty(tot2)}</div></div>
     <div class="stat-card"><div class="stat-label">3rd Supply (25%)</div><div class="stat-value">${fmtQty(tot3)}</div></div>
   </div>
   <div class="panel">
-    <h3>Family-wise Suggested Order <span class="cnt">${rows.length} families · sorted by size</span></h3>
+    <h3>Family-wise Order Plan <span class="cnt">${rows.length} families</span></h3>
     <table class="responsive-table">
-      <thead><tr><th>Family</th><th class="num">${monthLabel(state.month)} Target</th><th class="num">${monthLabel(priorMonth)} Shortfall</th><th class="num">Opening Stock</th><th class="num">Suggested Order</th><th class="num">1st (50%)</th><th class="num">2nd (25%)</th><th class="num">3rd (25%)</th></tr></thead>
+      <thead><tr>
+        <th>Family</th><th class="num">System Suggestion</th>
+        ${isAdmin ? `<th class="num">HO Qty (edit)</th>` : `<th class="num">HO Qty</th>`}
+        ${!isAdmin ? `<th class="num">${isRsm?'Your Qty (edit)':'RSM Qty'}</th>` : ''}
+        <th class="num">1st (50%)</th><th class="num">2nd (25%)</th><th class="num">3rd (25%)</th>
+        ${isVal ? `<th class="num">${isAdmin?'HO':isRsm?'Your':'Final'} Value${!rows[0]||!rows[0].hasExactValue?' (est.)':''}</th>` : ''}
+      </tr></thead>
       <tbody>
       ${rows.map(r=>`<tr>
         <td data-label="Family">${esc(r.family)}</td>
-        <td class="num" data-label="${monthLabel(state.month)} Target">${fmtQty(r.augTarget)}</td>
-        <td class="num" data-label="${monthLabel(priorMonth)} Shortfall">${fmtQty(r.cappedShortfall)}${r.rawShortfall>r.cappedShortfall?` <span style="color:var(--muted);font-size:11px;">(capped from ${fmtQty(r.rawShortfall)})</span>`:''}</td>
-        <td class="num" data-label="Opening Stock">${r.hasStockData ? fmtQty(r.openingStock) : '—'}</td>
-        <td class="num" data-label="Suggested Order"><b>${fmtQty(r.suggested)}</b></td>
+        <td class="num" data-label="System Suggestion">${fmtQty(r.suggested)}</td>
+        ${isAdmin
+          ? `<td class="num" data-label="HO Qty"><input type="number" value="${r.hoQty}" style="width:90px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;" onchange="handleHoQtyChange('${escJs(town)}','${escJs(r.family)}',this.value)"></td>`
+          : `<td class="num" data-label="HO Qty">${fmtQty(r.hoQty)}</td>`
+        }
+        ${!isAdmin ? (isRsm
+          ? `<td class="num" data-label="Your Qty"><input type="number" value="${r.rsmQty}" style="width:90px;text-align:right;padding:6px 8px;border:1px solid var(--line);border-radius:6px;" onchange="handleRsmQtyChange('${escJs(town)}','${escJs(r.family)}',this.value)"></td>`
+          : `<td class="num" data-label="RSM Qty">${fmtQty(r.rsmQty)}</td>`) : ''}
         <td class="num" data-label="1st (50%)">${fmtQty(r.s1)}</td>
         <td class="num" data-label="2nd (25%)">${fmtQty(r.s2)}</td>
         <td class="num" data-label="3rd (25%)">${fmtQty(r.s3)}</td>
+        ${isVal ? `<td class="num" data-label="Value">${fmtRs(r[activeValueField])}</td>` : ''}
       </tr>`).join('')}
       </tbody>
     </table>
   </div>
-  <p class="footer-note">Formula: Suggested Order = ${monthLabel(state.month)} Target + (${monthLabel(priorMonth)} Target − Achieved, floored at 0, capped at 100% of ${monthLabel(state.month)}'s own target) − Opening Stock — floored at 0. Split 50% / 25% / 25% across 3 supplies.</p>`;
+  ${isAdmin ? `<button class="btn btn-primary" onclick="handleSubmitToRsm('${escJs(town)}')">${status.submitted?'Re-submit to RSM (with latest edits)':'Submit to RSM'}</button>` : ''}
+  <p class="footer-note">System Suggestion = ${monthLabel(state.month)} Target + (${monthLabel(priorMonth)} Target − Achieved, floored at 0, capped at 100% of this month's own target) − Opening Stock, floored at 0.${isVal?' Value = qty × configured SKU price; estimated using blended selling price where exact SKU-wise HO quantities were not uploaded.':''}</p>`;
 }
-function downloadSuggestedCsv(town){
-  const {rows} = state.suggestedData;
-  let csv = 'Family,Target,Prior Shortfall (capped),Opening Stock,Suggested Order,1st Supply (50%),2nd Supply (25%),3rd Supply (25%)\n';
+
+async function handleHoQtyChange(town, family, val){
+  const qty = Number(val);
+  if(isNaN(qty) || qty<0){ alert('Enter a valid quantity.'); render(); return; }
+  const before = state.orderPlanData.rows.find(r=>r.family===family);
+  const beforeVal = before ? before.hoQty : null;
+  const ok = await dbSaveHoQty(state.month, town, family, qty);
+  if(ok){
+    await logAudit('ho_qty_change', state.month, town, `${family}: ${fmtQty(beforeVal)} → ${fmtQty(qty)}`);
+    state.orderPlanData = await buildOrderPlanView(state.month, town); render();
+  }
+}
+async function handleRsmQtyChange(town, family, val){
+  const qty = Number(val);
+  if(isNaN(qty) || qty<0){ alert('Enter a valid quantity.'); render(); return; }
+  const before = state.orderPlanData.rows.find(r=>r.family===family);
+  const beforeVal = before ? before.rsmQty : null;
+  const ok = await dbSaveRsmQty(state.month, town, family, qty);
+  if(ok){
+    await logAudit('rsm_qty_change', state.month, town, `${family}: ${fmtQty(beforeVal)} → ${fmtQty(qty)}`);
+    state.orderPlanData = await buildOrderPlanView(state.month, town); render();
+  }
+}
+async function handleSubmitToRsm(town){
+  if(!confirm(`Submit the ${monthLabel(state.month)} order plan for ${town} to its RSM? They'll be able to see and adjust it immediately.`)) return;
+  const ok = await dbSubmitToRsm(state.month, town);
+  if(ok){
+    await logAudit('submit_to_rsm', state.month, town, `Order plan released to RSM`);
+    state.orderPlanData = await buildOrderPlanView(state.month, town); render();
+  }
+}
+function downloadOrderPlanCsv(town){
+  const {rows} = state.orderPlanData;
+  let csv = 'Family,System Suggestion,HO Qty,HO Value (Rs),Your Final Qty,Your Value (Rs),1st Supply (50%),2nd Supply (25%),3rd Supply (25%)\n';
   rows.forEach(r=>{
-    csv += `"${r.family}","${r.augTarget}","${r.cappedShortfall}","${r.hasStockData?r.openingStock:''}","${r.suggested}","${r.s1}","${r.s2}","${r.s3}"\n`;
+    csv += `"${r.family}","${r.suggested}","${r.hoQty}","${r.hoValue.toFixed(2)}","${r.rsmQty}","${r.rsmValue.toFixed(2)}","${r.s1}","${r.s2}","${r.s3}"\n`;
   });
   const blob = new Blob([csv], {type:'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${state.month}_suggested_order.csv`;
+  a.href = url; a.download = `${town.replace(/\s+/g,'_')}_${state.month}_order_plan.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
+
 
 /* ---- Product Hierarchy (reference) ---- */
 function renderHierarchyBrowser(){
@@ -783,7 +1114,7 @@ function renderHierarchyBrowser(){
       </tbody>
     </table>
   </div>
-  <p class="footer-note">Note: this hierarchy's family groupings do not always match the target-setting family names used in the Achievement and Suggested Order screens — they're maintained as two separate classification systems in the source data.</p>`;
+  <p class="footer-note">Note: this hierarchy's family groupings do not always match the target-setting family names used in the Achievement and Order Plan screens — they're maintained as two separate classification systems in the source data.</p>`;
 }
 
 /* ---- Stock placeholder ---- */
@@ -793,7 +1124,7 @@ function renderStockPlaceholder(){
     <h3>Opening Stock &amp; Slow-Moving Analysis</h3>
     <div class="empty-note" style="padding:40px 0;">
       Awaiting opening stock data from the FGS/material team.<br>
-      Once uploaded (family-wise, town-wise), this screen will show stock availability and flag slow-moving families for alternate-product pushes — and the Suggested Order screen will automatically start netting it off.
+      Once uploaded (family-wise, town-wise), this screen will show stock availability and flag slow-moving families for alternate-product pushes — and the Order Plan screen will automatically start netting it off.
     </div>
   </div>`;
 }
@@ -803,7 +1134,7 @@ function renderNsmShell(){
   const isAdmin = state.user.role==='admin';
   const tabs = [
     {k:'achievement', l:'Achievement', ic:'●'},
-    {k:'suggested', l:'Suggested Order', ic:'▶'},
+    {k:'suggested', l:'Order Plan', ic:'▶'},
     {k:'hierarchy', l:'Hierarchy', ic:'▤'},
     {k:'stock', l:'Stock', ic:'▦'}
   ];
@@ -854,8 +1185,8 @@ async function loadNsmView(){
     }
   } else if(state.nsmView==='suggested'){
     if(state.selectedTown){
-      if(!state.suggestedData) state.suggestedData = await computeSuggestedOrder(state.month, state.selectedTown);
-      body.innerHTML = renderSuggestedOrderDetail(state.selectedTown, state.suggestedData);
+      if(!state.orderPlanData) state.orderPlanData = await buildOrderPlanView(state.month, state.selectedTown);
+      body.innerHTML = renderOrderPlanDetail(state.selectedTown, state.orderPlanData, state.user.role==='admin' ? 'admin' : 'nsm');
     } else if(state.expandedRsm){
       body.innerHTML = renderRsmTownGridWrapper(state.expandedRsm, TOWN_DATA[state.expandedRsm].towns, 'suggested');
     } else {
@@ -867,6 +1198,7 @@ async function loadNsmView(){
   } else if(state.nsmView==='stock'){
     body.innerHTML = renderStockPlaceholder();
   } else if(state.nsmView==='upload'){
+    if(state.adminUploadTab==='log' && !state.auditLogData) await loadChangeLog();
     body.innerHTML = renderAdminUpload();
   }
 }
@@ -897,7 +1229,7 @@ async function renderRsmSummaryAsync(mode){
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${fmtPct(pct)}</div></div>
   </div>
   <div class="panel">
-    <h3>${mode==='suggested'?'Suggested Orders':'Achievement vs Target'} — RSM-wise <span class="cnt">tap a row to drill into towns</span></h3>
+    <h3>${mode==='suggested'?'Order Plan':'Achievement vs Target'} — RSM-wise <span class="cnt">tap a row to drill into towns</span></h3>
     <table class="responsive-table">
       <thead><tr><th>RSM</th><th class="num">Target</th><th class="num">Achieved</th><th class="num">Balance</th><th>Achv.</th><th class="num">Towns</th></tr></thead>
       <tbody>
@@ -918,7 +1250,7 @@ async function renderRsmSummaryAsync(mode){
 }
 
 /* ============================= ADMIN UPLOAD ============================= */
-function setAdminUploadTab(t){ state.adminUploadTab=t; state.adminUploadResult=null; render(); }
+function setAdminUploadTab(t){ state.adminUploadTab=t; state.adminUploadResult=null; if(t==='log') state.auditLogData=null; render(); }
 function renderAdminUpload(){
   const tab = state.adminUploadTab;
   return `
@@ -926,10 +1258,60 @@ function renderAdminUpload(){
     <button class="tab ${tab==='target'?'active':''}" onclick="setAdminUploadTab('target')">Target Upload</button>
     <button class="tab ${tab==='achievement'?'active':''}" onclick="setAdminUploadTab('achievement')">Achievement Workbook</button>
     <button class="tab ${tab==='stock'?'active':''}" onclick="setAdminUploadTab('stock')">Opening Stock</button>
+    <button class="tab ${tab==='hoqty'?'active':''}" onclick="setAdminUploadTab('hoqty')">HO Qty Upload</button>
+    <button class="tab ${tab==='pricing'?'active':''}" onclick="setAdminUploadTab('pricing')">SKU Pricing</button>
+    <button class="tab ${tab==='log'?'active':''}" onclick="setAdminUploadTab('log')">Change Log</button>
   </div>
-  ${tab==='target' ? renderTargetUploadPanel() : tab==='achievement' ? renderAchievementUploadPanel() : renderStockUploadPanel()}
+  ${tab==='target' ? renderTargetUploadPanel()
+    : tab==='achievement' ? renderAchievementUploadPanel()
+    : tab==='stock' ? renderStockUploadPanel()
+    : tab==='hoqty' ? renderHoQtyUploadPanel()
+    : tab==='log' ? renderChangeLog()
+    : renderPricingUploadPanel()}
   `;
 }
+
+
+function renderPricingUploadPanel(){
+  const result = state.adminUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload SKU Price &amp; UOM</h3>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Paste one SKU per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">SKU Code, Price, UOM</code> — UOM is optional (defaults to PCS if left blank). This is a one-time company-wide configuration, not per-town or per-month — once set, every Value view across the whole portal (Achievement, Order Plan, downloads) updates automatically.
+    </p>
+    <textarea id="pricingPasteInput" rows="8" placeholder="051045694, 12.50, PCS
+051045695, 14.00, PCS" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handlePricingUpload()">Upload Pricing</button>
+    ${result && result.kind==='pricing' ? renderUploadResultBox(result) : ''}
+  </div>`;
+}
+async function handlePricingUpload(){
+  const text = document.getElementById('pricingPasteInput').value;
+  if(!text.trim()){ alert('Paste at least one line.'); return; }
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [], unmatched = [];
+  lines.forEach(line=>{
+    const parts = line.split(/[,\t]/).map(p=>p.trim());
+    if(parts.length<2){ unmatched.push(line); return; }
+    const sku_code = parts[0];
+    const price = Number(String(parts[1]).replace(/,/g,''));
+    const uom = parts[2] || 'PCS';
+    if(!sku_code || isNaN(price)){ unmatched.push(line); return; }
+    rows.push({sku_code, price, uom});
+  });
+  let res;
+  if(rows.length){
+    const {error} = await sb.from('product_hierarchy').upsert(rows, {onConflict:'sku_code', ignoreDuplicates:false});
+    res = error ? {ok:false, error:error.message} : {ok:true, count:rows.length, unmatched};
+    if(!error) await logAudit('pricing_upload', null, null, `${rows.length} SKU prices updated`);
+  } else {
+    res = {ok:true, count:0, unmatched};
+  }
+  state.adminUploadResult = {kind:'pricing', ...res};
+  render();
+}
+
 
 function renderTargetUploadPanel(){
   const result = state.adminUploadResult;
@@ -962,6 +1344,7 @@ async function handleTargetUpload(){
   const text = document.getElementById('targetPasteInput').value;
   if(!month || !text.trim()){ alert('Enter a month and paste at least one line.'); return; }
   const res = await uploadTargetBulk(month, town, text);
+  if(res.ok) await logAudit('target_upload', month, town, `${res.count} families updated`);
   state.adminTargetMonth = month; state.adminTargetTown = town;
   state.adminUploadResult = {kind:'target', ...res};
   render();
@@ -1006,6 +1389,10 @@ async function handleAchievementUpload(file){
   document.getElementById('achUploadStatus').innerHTML = '<div class="loading">Processing workbook — this can take a minute for large files…</div>';
   try{
     const res = await uploadAchievementWorkbook(file, month, type);
+    if(res.ok){
+      skuFamilyMapCache = null; // invalidate — new SKU/family assignments may have just been added
+      await logAudit('achievement_workbook_upload', month, null, `${res.sheetsProcessed} towns, ${res.familyRows} family rows, ${res.skuRows} SKU rows (${type})`);
+    }
     state.adminAchMonth = month; state.adminAchType = type;
     state.adminUploadResult = {kind:'achievement', ...res};
     render();
@@ -1018,34 +1405,86 @@ function renderStockUploadPanel(){
   const result = state.adminUploadResult;
   return `
   <div class="panel">
-    <h3>Upload Opening Stock (Family-wise)</h3>
+    <h3>Upload Opening Stock (SKU-wise, all towns in one go)</h3>
     <div class="row-flex" style="margin-bottom:14px;">
       <div class="field">
         <label>Month (stock opening for)</label>
         <input id="stockMonthInput" type="text" value="${state.adminTargetMonth}" placeholder="YYYY-MM">
       </div>
-      <div class="field">
-        <label>Town</label>
-        <select id="stockTownInput">
-          ${ALL_TOWNS.map(t=>`<option value="${esc(t)}" ${state.adminTargetTown===t?'selected':''}>${esc(t)}</option>`).join('')}
-        </select>
-      </div>
     </div>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Paste one family per line as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Family, Opening Stock Qty</code>. If FGS only gives you one company-wide figure per family (not per-town), upload the same number under every town for now.</p>
-    <textarea id="stockPasteInput" rows="8" placeholder="Ink F Pen 15ml, 500
-Ink F Pen 30ml, 1200" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Paste every town's SKU-wise stock together as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, SKU Code, Qty</code> — one line per SKU per town, all towns mixed in one paste. Quantities are automatically summed up to family level per town for the Order Plan calculation (a SKU's family is resolved from your Achievement workbook uploads, so make sure that's uploaded for at least one month first).
+    </p>
+    <textarea id="stockPasteInput" rows="10" placeholder="Hyderabad, 051045694, 120
+Hyderabad, 051045695, 80
+Multan, 051045694, 200" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
     <button class="btn btn-primary" style="margin-top:10px;" onclick="handleStockUpload()">Upload Stock</button>
     ${result && result.kind==='stock' ? renderUploadResultBox(result) : ''}
   </div>`;
 }
 async function handleStockUpload(){
   const month = document.getElementById('stockMonthInput').value.trim();
-  const town = document.getElementById('stockTownInput').value;
   const text = document.getElementById('stockPasteInput').value;
   if(!month || !text.trim()){ alert('Enter a month and paste at least one line.'); return; }
-  const res = await uploadStockBulk(month, town, text);
+  const res = await uploadStockSkuWiseBulk(month, text);
   state.adminUploadResult = {kind:'stock', ...res};
   render();
+}
+
+function renderHoQtyUploadPanel(){
+  const result = state.adminUploadResult;
+  return `
+  <div class="panel">
+    <h3>Upload HO Order Qty (SKU-wise, all towns in one go)</h3>
+    <div class="row-flex" style="margin-bottom:14px;">
+      <div class="field">
+        <label>Month (order plan for)</label>
+        <input id="hoQtyMonthInput" type="text" value="${state.adminTargetMonth}" placeholder="YYYY-MM">
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">
+      Paste every town's SKU-wise order quantities as <code style="background:#EEF0F4;padding:1px 6px;border-radius:4px;">Town, SKU Code, Qty</code>. These become each family's "HO Qty" in the Order Plan screen (summed up per town), ready to review and Submit to RSM from there. Uploading again for the same SKU/town/month overwrites the previous value.
+    </p>
+    <textarea id="hoQtyPasteInput" rows="10" placeholder="Hyderabad, 051045694, 150
+Hyderabad, 051045695, 95
+Multan, 051045694, 210" style="width:100%;padding:12px;border:1.5px solid var(--line);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;"></textarea>
+    <button class="btn btn-primary" style="margin-top:10px;" onclick="handleHoQtyBulkUpload()">Upload HO Qty</button>
+    ${result && result.kind==='ho_sku' ? renderUploadResultBox(result) : ''}
+  </div>`;
+}
+async function handleHoQtyBulkUpload(){
+  const month = document.getElementById('hoQtyMonthInput').value.trim();
+  const text = document.getElementById('hoQtyPasteInput').value;
+  if(!month || !text.trim()){ alert('Enter a month and paste at least one line.'); return; }
+  const res = await uploadHoQtySkuWiseBulk(month, text);
+  state.adminUploadResult = {kind:'ho_sku', ...res};
+  render();
+}
+
+/* ============================= CHANGE LOG ============================= */
+async function loadChangeLog(){
+  state.auditLogData = await fetchAuditLog(200);
+}
+function renderChangeLog(){
+  const rows = state.auditLogData || [];
+  return `
+  <div class="panel">
+    <h3>Change Log <span class="cnt">${rows.length} most recent actions</span></h3>
+    <table class="responsive-table">
+      <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Month</th><th>Town</th><th>Details</th></tr></thead>
+      <tbody>
+      ${rows.map(r=>`<tr>
+        <td data-label="When">${new Date(r.at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+        <td data-label="Who">${esc(r.actor)} <span class="badge badge-gray">${esc(r.role)}</span></td>
+        <td data-label="Action">${esc(r.action)}</td>
+        <td data-label="Month">${esc(r.month||'—')}</td>
+        <td data-label="Town">${esc(r.town||'all')}</td>
+        <td data-label="Details" style="max-width:320px;">${esc(r.details)}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+    ${rows.length===0 ? '<div class="empty-note">No actions logged yet.</div>' : ''}
+  </div>`;
 }
 
 function renderUploadResultBox(r){
@@ -1055,6 +1494,11 @@ function renderUploadResultBox(r){
     html += `<b>${r.sheetsProcessed} town sheets processed</b> — ${r.familyRows} family rows, ${r.skuRows} SKU rows upserted.`;
     if(r.townsUnmatched && r.townsUnmatched.length){
       html += `<div style="margin-top:6px;color:var(--amber);">${r.townsUnmatched.length} sheet(s) skipped — town name not recognized:<br>${r.townsUnmatched.map(esc).join('<br>')}</div>`;
+    }
+  } else if(r.kind==='stock' || r.kind==='ho_sku'){
+    html += `<b>${r.skuCount} SKU rows across ${r.townCount} towns</b> → ${r.familyCount} family totals updated.`;
+    if(r.unmatched && r.unmatched.length){
+      html += `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) skipped:<br>${r.unmatched.map(esc).join('<br>')}</div>`;
     }
   } else {
     html += `<b>${r.count} row(s) updated.</b>`;
@@ -1069,7 +1513,7 @@ function renderUploadResultBox(r){
 /* ============================= AUTO-REFRESH ON RESUME ============================= */
 function refreshCurrentViewData(){
   if(!state.user) return;
-  state.familyData=null; state.suggestedData=null; state.nsmFamilySummary=null; state.hierarchyData=null;
+  state.familyData=null; state.orderPlanData=null; state.nsmFamilySummary=null; state.hierarchyData=null;
   render();
 }
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshCurrentViewData(); });
