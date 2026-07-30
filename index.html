@@ -1306,17 +1306,30 @@ async function handlePricingUpload(){
     // violate product_hierarchy's NOT NULL sku_name/dcm_family and fail the
     // ENTIRE batch over just the new codes. So pre-create any unknown codes
     // with a placeholder name first, then the price/uom upsert always succeeds.
+    // Chunked defensively so a large paste (hundreds of codes) never risks a
+    // URL-length or payload-size edge case in a single request.
+    function chunk(arr, size){ const out=[]; for(let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; }
     const codes = rows.map(r=>r.sku_code);
-    const {data:existing, error:existErr} = await sb.from('product_hierarchy').select('sku_code').in('sku_code', codes);
-    if(existErr){ state.adminUploadResult = {kind:'pricing', ok:false, error:existErr.message}; render(); return; }
-    const existingSet = new Set((existing||[]).map(r=>r.sku_code));
+    const existingSet = new Set();
+    for(const codeChunk of chunk(codes, 100)){
+      const {data, error} = await sb.from('product_hierarchy').select('sku_code').in('sku_code', codeChunk);
+      if(error){ state.adminUploadResult = {kind:'pricing', ok:false, error:error.message}; render(); return; }
+      (data||[]).forEach(r=>existingSet.add(r.sku_code));
+    }
     const newCodes = codes.filter(c=>!existingSet.has(c));
     if(newCodes.length){
       const placeholders = newCodes.map(c=>({sku_code:c, sku_name:`(Unnamed SKU ${c})`, dcm_family:'(Unclassified)'}));
-      const {error: phError} = await sb.from('product_hierarchy').insert(placeholders);
-      if(phError){ state.adminUploadResult = {kind:'pricing', ok:false, error:phError.message}; render(); return; }
+      for(const phChunk of chunk(placeholders, 200)){
+        const {error: phError} = await sb.from('product_hierarchy').upsert(phChunk, {onConflict:'sku_code', ignoreDuplicates:true});
+        if(phError){ state.adminUploadResult = {kind:'pricing', ok:false, error:phError.message}; render(); return; }
+      }
     }
-    const {error} = await sb.from('product_hierarchy').upsert(rows, {onConflict:'sku_code', ignoreDuplicates:false});
+    let upsertError = null;
+    for(const rowChunk of chunk(rows, 200)){
+      const {error} = await sb.from('product_hierarchy').upsert(rowChunk, {onConflict:'sku_code', ignoreDuplicates:false});
+      if(error){ upsertError = error; break; }
+    }
+    const error = upsertError;
     res = error ? {ok:false, error:error.message} : {ok:true, count:rows.length, unmatched, newCodes};
     if(!error){
       let details = `${rows.length} SKU prices updated`;
