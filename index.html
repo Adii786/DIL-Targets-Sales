@@ -1302,9 +1302,27 @@ async function handlePricingUpload(){
   });
   let res;
   if(rows.length){
+    // Check which SKU codes don't exist yet — inserting price/uom alone would
+    // violate product_hierarchy's NOT NULL sku_name/dcm_family and fail the
+    // ENTIRE batch over just the new codes. So pre-create any unknown codes
+    // with a placeholder name first, then the price/uom upsert always succeeds.
+    const codes = rows.map(r=>r.sku_code);
+    const {data:existing, error:existErr} = await sb.from('product_hierarchy').select('sku_code').in('sku_code', codes);
+    if(existErr){ state.adminUploadResult = {kind:'pricing', ok:false, error:existErr.message}; render(); return; }
+    const existingSet = new Set((existing||[]).map(r=>r.sku_code));
+    const newCodes = codes.filter(c=>!existingSet.has(c));
+    if(newCodes.length){
+      const placeholders = newCodes.map(c=>({sku_code:c, sku_name:`(Unnamed SKU ${c})`, dcm_family:'(Unclassified)'}));
+      const {error: phError} = await sb.from('product_hierarchy').insert(placeholders);
+      if(phError){ state.adminUploadResult = {kind:'pricing', ok:false, error:phError.message}; render(); return; }
+    }
     const {error} = await sb.from('product_hierarchy').upsert(rows, {onConflict:'sku_code', ignoreDuplicates:false});
-    res = error ? {ok:false, error:error.message} : {ok:true, count:rows.length, unmatched};
-    if(!error) await logAudit('pricing_upload', null, null, `${rows.length} SKU prices updated`);
+    res = error ? {ok:false, error:error.message} : {ok:true, count:rows.length, unmatched, newCodes};
+    if(!error){
+      let details = `${rows.length} SKU prices updated`;
+      if(newCodes.length) details += ` (${newCodes.length} new SKU code(s) auto-created with placeholder names — rename them in Product Hierarchy: ${newCodes.join(', ')})`;
+      await logAudit('pricing_upload', null, null, details);
+    }
   } else {
     res = {ok:true, count:0, unmatched};
   }
@@ -1504,6 +1522,9 @@ function renderUploadResultBox(r){
     html += `<b>${r.count} row(s) updated.</b>`;
     if(r.unmatched && r.unmatched.length){
       html += `<div style="margin-top:6px;color:var(--amber);">${r.unmatched.length} line(s) couldn't be parsed:<br>${r.unmatched.map(esc).join('<br>')}</div>`;
+    }
+    if(r.newCodes && r.newCodes.length){
+      html += `<div style="margin-top:6px;color:var(--amber);">${r.newCodes.length} SKU code(s) weren't in Product Hierarchy yet — auto-created with placeholder names so this upload wouldn't fail. Please rename them properly:<br>${r.newCodes.map(esc).join('<br>')}</div>`;
     }
   }
   html += `</div>`;
