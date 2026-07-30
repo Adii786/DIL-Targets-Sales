@@ -899,12 +899,6 @@ function renderTownAchievementDetail(town, familyData){
     return vb - va;
   });
   const fmt = isVal ? fmtRs : fmtQty;
-  let totTarget=0, totAch=0;
-  families.forEach(f=>{
-    totTarget += isVal ? familyData[f].targetValueEst : familyData[f].target;
-    totAch += isVal ? familyData[f].achievedValue : familyData[f].achieved;
-  });
-  const pct = achPct(totTarget, totAch);
   return `
   <div class="entry-screen-header">
     <button class="back-btn" onclick="backToTownGrid()">←</button>
@@ -914,12 +908,6 @@ function renderTownAchievementDetail(town, familyData){
   ${viewToggleHtml()}
   ${isVal && !anyPricing ? `<div class="err" style="background:var(--amber-bg);color:var(--amber);">No SKU prices configured yet in Product Hierarchy — value figures will show as Rs 0 until prices are uploaded.</div>` : ''}
   ${isVal && anyPricing ? `<div class="footer-note" style="text-align:left;margin:0 0 16px;">Target value is <b>estimated</b> — it's this month's actual blended selling price applied to the unit target, since targets are only set in units, not value.</div>` : ''}
-  <div class="cards-row">
-    <div class="stat-card"><div class="stat-label">Total Target</div><div class="stat-value">${fmt(totTarget)}</div></div>
-    <div class="stat-card"><div class="stat-label">Total Achieved</div><div class="stat-value">${fmt(totAch)}</div></div>
-    <div class="stat-card"><div class="stat-label">Remaining Balance</div><div class="stat-value ${totTarget-totAch>0?'neg':'pos'}">${fmt(Math.max(totTarget-totAch,0))}</div></div>
-    <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${fmtPct(pct)}</div></div>
-  </div>
   <div class="panel">
     <h3>Family-wise (Primary) <span class="cnt">${families.length} families · tap to see SKUs</span></h3>
     <table class="responsive-table">
@@ -1222,12 +1210,13 @@ async function renderRsmSummaryAsync(mode){
   rows.forEach(r=>{ totTarget+=r.target; totAch+=r.achieved; });
   const pct = achPct(totTarget, totAch);
   return `
+  ${mode==='suggested' ? `
   <div class="cards-row">
     <div class="stat-card"><div class="stat-label">Total Target — All Regions</div><div class="stat-value">${fmtQty(totTarget)}</div></div>
     <div class="stat-card"><div class="stat-label">Total Achieved</div><div class="stat-value">${fmtQty(totAch)}</div></div>
     <div class="stat-card"><div class="stat-label">Remaining Balance</div><div class="stat-value ${totTarget-totAch>0?'neg':'pos'}">${fmtQty(Math.max(totTarget-totAch,0))}</div></div>
     <div class="stat-card"><div class="stat-label">Achievement</div><div class="stat-value">${fmtPct(pct)}</div></div>
-  </div>
+  </div>` : ''}
   <div class="panel">
     <h3>${mode==='suggested'?'Order Plan':'Achievement vs Target'} — RSM-wise <span class="cnt">tap a row to drill into towns</span></h3>
     <table class="responsive-table">
